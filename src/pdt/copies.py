@@ -289,7 +289,8 @@ def download(entry: dict) -> bytes:
     problem = None
     for _ in range(DOWNLOAD_TRIES):
         try:
-            with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response:
+            with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_SECONDS,
+                                        context=autoidm.tls_context()) as response:
                 data = response.read(limit + 1)
             if len(data) != limit:
                 raise CopyError(f"the zip of {entry.get('unit')} is not {limit} bytes")
@@ -318,7 +319,8 @@ def put(upload: dict, data: bytes, digest: str) -> None:
         headers={"x-amz-checksum-sha256": base64.b64encode(bytes.fromhex(digest)).decode(),
                  "content-type": "application/zip", **headers})
     try:
-        with urllib.request.urlopen(request, timeout=autoidm.UPLOAD_TIMEOUT_SECONDS) as response:
+        with urllib.request.urlopen(request, timeout=autoidm.UPLOAD_TIMEOUT_SECONDS,
+                                    context=autoidm.tls_context()) as response:
             response.read()
     except urllib.error.HTTPError as e:
         e.close()

@@ -436,7 +436,8 @@ def doorbell(url: str, etag: str | None) -> tuple[int, str | None]:
     try:
         request = urllib.request.Request(autoidm.check_url(url, "/v1/service/checkin"),
                                          headers={"If-None-Match": etag} if etag else {})
-        with urllib.request.urlopen(request, timeout=DOORBELL_TIMEOUT_SECONDS) as response:
+        with urllib.request.urlopen(request, timeout=DOORBELL_TIMEOUT_SECONDS,
+                                    context=autoidm.tls_context()) as response:
             response.read()
             return response.status, response.headers.get("ETag")
     except urllib.error.HTTPError as e:

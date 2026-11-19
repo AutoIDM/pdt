@@ -1353,6 +1353,7 @@ source = { editable = "." }
 dependencies = [
     { name = "argcomplete" },
     { name = "backoff" },
+    { name = "certifi" },
     { name = "cryptography" },
     { name = "fsspec" },
     { name = "google-auth" },
@@ -1406,6 +1407,7 @@ requires-dist = [
     { name = "backoff" },
     { name = "boto3", marker = "extra == 'apps'" },
     { name = "boto3", extras = ["crt"], marker = "(platform_machine != 'ARM64' or sys_platform != 'win32') and extra == 'apps'" },
+    { name = "certifi" },
     { name = "cryptography" },
     { name = "cryptography", marker = "extra == 'apps'" },
     { name = "fsspec" },

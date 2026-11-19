@@ -25,6 +25,7 @@ import json
 import os
 import random
 import secrets
+import ssl
 import sys
 import time as time_module
 import urllib.error
@@ -38,6 +39,7 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 from time import time
 
+import certifi
 import jwt
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import (
@@ -198,12 +200,21 @@ def correct_clock(date: str | None) -> None:
         clock_offset = difference
 
 
+def tls_context() -> ssl.SSLContext:
+    """The roots of this computer, and certifi's. A new Windows computer adds a root to its store
+    only when Windows itself first needs it, so the store can lack the root of AutoIDM's AWS
+    hosts; certifi holds it."""
+    context = ssl.create_default_context()
+    context.load_verify_locations(certifi.where())
+    return context
+
+
 def send(url: str, data: bytes | Iterator[bytes], headers: dict[str, str],
          timeout: int = TIMEOUT_SECONDS) -> dict:
     try:
         request = urllib.request.Request(url, data=data, method="POST",
                                          headers={"Content-Type": "application/json", **headers})
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with urllib.request.urlopen(request, timeout=timeout, context=tls_context()) as response:
             raw = response.read()
     except urllib.error.HTTPError as e:
         try:

@@ -170,7 +170,7 @@ def test_a_malformed_answer_is_an_autoidm_error(folder, monkeypatch, path, answe
                 raise answer
             return answer
 
-    monkeypatch.setattr(autoidm.urllib.request, "urlopen", lambda request, timeout: Answer())
+    monkeypatch.setattr(autoidm.urllib.request, "urlopen", lambda request, timeout, context: Answer())
     with pytest.raises(autoidm.AutoidmError, match=said):
         if path == "/v1/events":
             autoidm.post(found, path, {})
@@ -568,3 +568,26 @@ def test_an_upload_sends_the_presigned_fields_and_the_file_as_multipart(backend)
     assert b'name="key"\r\n\r\nuploads/x/a.log\r\n' in raw
     assert raw.index(b'name="policy"') < raw.index(b'name="file"; filename="r1.log"')
     assert b"\r\n\r\nline one\n\r\n" in raw
+
+
+def test_the_tls_context_trusts_the_roots_of_certifi(tmp_path, monkeypatch):
+    import datetime
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "pdt test root")])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    root = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
+            .public_key(key.public_key()).serial_number(1).not_valid_before(now)
+            .not_valid_after(now + datetime.timedelta(days=1))
+            .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+            .sign(key, hashes.SHA256()))
+    bundle = tmp_path / "cacert.pem"
+    bundle.write_bytes(root.public_bytes(Encoding.PEM))
+    monkeypatch.setattr(autoidm.certifi, "where", lambda: str(bundle))
+    found = autoidm.tls_context().get_ca_certs()
+    assert ((("commonName", "pdt test root"),),) in [cert["subject"] for cert in found]

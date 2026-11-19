@@ -88,9 +88,10 @@ class Connection:
     def open(self):
         from websockets.sync.client import connect
         token = autoidm.websocket_token(self.registration)
+        secure = {"ssl": autoidm.tls_context()} if self.url.startswith("wss:") else {}
         return connect(self.url, additional_headers={"Authorization": f"Bearer {token}"},
                        open_timeout=OPEN_TIMEOUT_SECONDS, ping_interval=PING_SECONDS,
-                       ping_timeout=PONG_SECONDS, proxy=True)
+                       ping_timeout=PONG_SECONDS, proxy=True, **secure)
 
     def say_once(self, message: str) -> None:
         if message != self.said:
