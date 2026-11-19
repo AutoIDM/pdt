@@ -827,7 +827,7 @@ def install_for(customer: str, projects: str | None, backend: str | None,
 def install(projects: str | None, backend: str | None, proxy: str | None,
             assume_yes: bool) -> int:
     if os.name != "nt":
-        console.error(WINDOWS_ONLY)
+        console.error(console.escape(WINDOWS_ONLY))
         return 1
     if not require_admin("install"):
         return 1
