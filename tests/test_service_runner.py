@@ -1327,3 +1327,16 @@ def test_a_start_check_that_cannot_finish_stops_the_service(machine, monkeypatch
     monkeypatch.setattr(service.service_access, "is_admin", lambda: True)
     monkeypatch.setattr(service.service_access, "writable_by_others", too_many)
     assert service.access_problem(settings()) is True
+
+
+def test_a_folder_others_can_change_at_install_says_the_install_stopped(machine, monkeypatch,
+                                                                         capsys):
+    monkeypatch.setattr(service.service_access, "is_admin", lambda: True)
+    monkeypatch.setattr(service.service_access, "writable_by_others",
+                        lambda folder: ("BUILTIN\\Users", folder))
+    assert service.access_problem(settings(), installing=True) is True
+    out = " ".join(capsys.readouterr().out.split())
+    assert "pdt did not install the service." in out and "pdt service install" in out
+    assert "the service stopped" not in out
+    assert service.access_problem(settings()) is True
+    assert "so the service stopped" in " ".join(capsys.readouterr().out.split())

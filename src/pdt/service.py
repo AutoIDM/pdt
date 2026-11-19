@@ -637,7 +637,9 @@ def one_customer_message(customer: str) -> str:
             "computer serves one customer, because a job can read each file on this computer.")
 
 
-def access_problem(settings: dict) -> bool:
+def access_problem(settings: dict, installing: bool = False) -> bool:
+    """True when another account can change a folder that the service runs from. At a start it
+    says that the service stopped, and at an install that pdt did not install it."""
     if not service_access.is_admin():
         return False
     folders = []
@@ -654,15 +656,21 @@ def access_problem(settings: dict) -> bool:
             found = service_access.writable_by_others(folder)
         except service_access.AccessError as e:
             console.error(console.escape(str(e)))
-            say(f"{e} The service stopped.")
+            if not installing:
+                say(f"{e} The service stopped.")
             return True
         if found:
             account, path = found
             console.error(f"The account {console.value(account)} can change "
                           f"{console.value(path)}, so the pdt service does not run from "
                           f"{console.value(folder)} as {console.value(service_account())}.")
-            console.next_steps(service_access.repair_commands(folder))
-            say(f"The account {account} can change {path}, so the service stopped.")
+            if installing:
+                console.say("pdt did not install the service.")
+                console.next_steps([*service_access.repair_commands(folder),
+                                    (install_next_step(), "install the service")])
+            else:
+                console.next_steps(service_access.repair_commands(folder))
+                say(f"The account {account} can change {path}, so the service stopped.")
             return True
     return False
 
@@ -800,7 +808,7 @@ def install_for(customer: str, projects: str | None, backend: str | None,
         with console.waiting(f"installing: pdt {__version__} under "
                              f"{service_install.versions_folder()}"):
             settings["python"] = str(service_install.install_running(settings))
-        if access_problem(settings):
+        if access_problem(settings, installing=True):
             return 1
         previous = current.get("backend")
         if previous in service_backends.BACKENDS and previous != name:
