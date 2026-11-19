@@ -227,7 +227,12 @@ def save_registration(answer: dict, key: Ed25519PrivateKey, api_url: str, pendin
                 console.say(f"pdt revoked the new installation "
                             f"{console.value(answer['installation_id'])}.")
             pending.unlink(missing_ok=True)
-            save_customer(customer)
+            try:
+                config.find_project()
+            except config.ConfigError:
+                pass
+            else:
+                save_customer(customer)
             console.say("To replace the registration, delete these two files:")
             console.columns([(str(info), "the registration"), (str(key_path), "its key")])
             console.next_steps([("pdt register", "register this computer again")])
