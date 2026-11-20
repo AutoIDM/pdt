@@ -409,6 +409,7 @@ def test_the_summary_says_requirements_psd1_replaced_the_scan():
         "modules to install, as requirements.psd1 lists them: ImportExcel (7.8.10)")
 
 
+@pytest.mark.slow
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason="needs pwsh")
 def test_the_extractor_reads_a_real_script(tmp_path, monkeypatch):
     (tmp_path / "report.ps1").write_text(

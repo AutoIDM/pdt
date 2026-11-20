@@ -133,6 +133,7 @@ def test_a_failed_install_names_the_module_and_a_command_to_run(monkeypatch, tmp
         "-Repository PSGallery -Scope CurrentUser. pwsh said: Save-PSResource: Connection refused")
 
 
+@pytest.mark.slow
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason="needs pwsh")
 def test_pwsh_finds_the_module_in_the_pdt_folder_first(tmp_path, monkeypatch):
     def module(root, name, version):
