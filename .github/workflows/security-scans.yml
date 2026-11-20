@@ -1,0 +1,72 @@
+# Known vulnerabilities in what pdt installs or builds on a user's computer
+# and that Dependabot does not read: the script headers, the job base image,
+# and the tools pdt downloads at a pinned version.
+
+name: security-scans
+
+on:
+  pull_request:
+    paths:
+      - "src/pdt/**.py"
+      - ci/check_tool_versions.py
+      - .github/workflows/security-scans.yml
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: security-scans-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  script-dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      # A scaffolded run.py pins the pdt-cli that wrote it, so the template
+      # audits the newest pdt-cli release.
+      - run: |
+          status=0
+          for script in $(grep -rlx --include='*.py' '# /// script' src/pdt | sort); do
+            sed 's/==PDT_VERSION//' "$script" > "$RUNNER_TEMP/script.py"
+            uv audit --quiet --preview-features audit-command,json-output --output-format json --script "$RUNNER_TEMP/script.py" > "$RUNNER_TEMP/audit.json" || status=1
+            jq -r --arg f "$script" '"\($f): \(.summary.vulnerabilities) vulnerabilities in \(.summary.audited_packages) packages",
+              (.vulnerabilities[] | "::error file=\($f)::\(.dependency.name) \(.dependency.version): \(.display_id), fixed in \(.fix_versions | join(", "))")' "$RUNNER_TEMP/audit.json" || status=1
+          done
+          exit $status
+
+  base-image:
+    runs-on: ubuntu-latest
+    env:
+      TRIVY_VERSION: 0.76.1
+      TRIVY_SHA256: c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: |
+          curl -sSfL -o "$RUNNER_TEMP/trivy.tar.gz" "https://github.com/aquasecurity/trivy/releases/download/v$TRIVY_VERSION/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          echo "$TRIVY_SHA256  $RUNNER_TEMP/trivy.tar.gz" | sha256sum -c
+          tar -xzf "$RUNNER_TEMP/trivy.tar.gz" -C "$RUNNER_TEMP" trivy
+      # Both job Dockerfiles uninstall pip first, so its vendored packages
+      # never reach a job image.
+      - run: |
+          image=$(uv run python -c 'from pdt.deploy_common import BASE_IMAGE; print(BASE_IMAGE)')
+          echo "$image"
+          "$RUNNER_TEMP/trivy" image --quiet --skip-dirs '**/site-packages/pip*' --format json --output "$RUNNER_TEMP/trivy.json" "$image"
+          jq -r '[.Results[].Vulnerabilities[]?] | group_by(.Severity)[] | "\(.[0].Severity): \(length), \(map(select((.FixedVersion // "") != "")) | length) with a fix"' "$RUNNER_TEMP/trivy.json"
+          jq -r '.Results[] | .Target as $t | .Vulnerabilities[]? | select(.Severity == "HIGH" or .Severity == "CRITICAL") | select((.FixedVersion // "") != "")
+            | "::error file=src/pdt/deploy_common.py::\(.PkgName) \(.InstalledVersion) (\($t | split("@")[0]), layer \(.Layer.DiffID[7:19])): \(.VulnerabilityID), fixed in \(.FixedVersion)"' "$RUNNER_TEMP/trivy.json" | tee "$RUNNER_TEMP/errors.txt"
+          test ! -s "$RUNNER_TEMP/errors.txt"
+
+  pinned-tools:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: python3 ci/check_tool_versions.py
