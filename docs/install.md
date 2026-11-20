@@ -33,3 +33,7 @@ The [pdt installer](https://github.com/AutoIDM/pdt/releases/latest/download/pdt-
 ## From a clone
 
 Clone this repository and run `./pdt` (or `.\pdt.bat` on Windows). It installs `uv` for you if you do not have it. Every way gives you the same commands.
+
+## Check a download
+
+Each release file (the installer, `pdt-windows-x64.zip`, the `pdt.exe` inside it, and the PyPI wheel and source archive) has a build provenance attestation. It proves that GitHub Actions built the file from a commit of this repository. To check a file you downloaded, run `gh attestation verify <file> --repo AutoIDM/pdt` with the [GitHub CLI](https://cli.github.com/). The command prints the commit and the workflow that built the file, and fails if the file changed after the build.

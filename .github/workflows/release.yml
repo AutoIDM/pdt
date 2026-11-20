@@ -48,11 +48,15 @@ jobs:
     environment: pypi
     permissions:
       id-token: write
+      attestations: write
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dist
           path: dist/
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
       - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
 
   windows-launcher:
@@ -63,6 +67,7 @@ jobs:
       contents: write
       pull-requests: read
       id-token: write
+      attestations: write
     outputs:
       version: ${{ steps.zip.outputs.version }}
       sha256: ${{ steps.zip.outputs.sha256 }}
@@ -130,6 +135,13 @@ jobs:
           path: pdt-windows-x64.zip
 
       - if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/launcher/pdt.exe
+            pdt-windows-x64.zip
+
+      - if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -159,6 +171,7 @@ jobs:
     permissions:
       contents: write
       id-token: write
+      attestations: write
     env:
       MSI: pdt-windows-x64-${{ needs.windows-launcher.outputs.version }}.msi
     steps:
@@ -224,6 +237,11 @@ jobs:
         with:
           name: msi
           path: ${{ env.MSI }}
+
+      - if: startsWith(github.ref, 'refs/tags/') && needs.publish.result == 'success'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ env.MSI }}
 
       - if: startsWith(github.ref, 'refs/tags/') && needs.publish.result == 'success'
         uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
