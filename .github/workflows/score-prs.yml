@@ -38,8 +38,10 @@ env:
 
 jobs:
   # select_prs.py finds this job's own check run by this id (OWN_CHECK).
+  # GitHub gives a Dependabot pull_request run no Actions secrets, so that run
+  # skips and the daily sweep scores the PR.
   score-prs:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
