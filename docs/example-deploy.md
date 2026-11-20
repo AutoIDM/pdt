@@ -47,8 +47,8 @@ Proceed? [y/N] y
  => [internal] load metadata for ghcr.io/astral-sh/uv:python3.13-trixie-slim@sha256    0.0s
  => [internal] load .dockerignore                                                      0.0s
  => => transferring context: 2B                                                        0.0s
- => CACHED [1/8] FROM ghcr.io/astral-sh/uv:python3.13-trixie-slim@sha256:e586c1c65b7  0.0s
- => => resolve ghcr.io/astral-sh/uv:python3.13-trixie-slim@sha256:e586c1c65b7071aec7  0.0s
+ => CACHED [1/8] FROM ghcr.io/astral-sh/uv:python3.13-trixie-slim@sha256:803d2b80b69  0.0s
+ => => resolve ghcr.io/astral-sh/uv:python3.13-trixie-slim@sha256:803d2b80b6913e5628  0.0s
  => [internal] load build context                                                      0.0s
  => => transferring context: 115.45kB                                                  0.0s
  => [2/8] RUN pip uninstall -y --root-user-action=ignore pip                           0.9s

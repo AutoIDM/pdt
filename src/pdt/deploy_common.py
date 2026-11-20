@@ -93,7 +93,7 @@ from pdt.utils.env_secret import private_file
 # The multi-platform index digest, so a local and a cloud build start from the same layers.
 # To bump it, read the digest of the tag's index from ghcr.io.
 BASE_IMAGE = ("ghcr.io/astral-sh/uv:python3.13-trixie-slim"
-              "@sha256:e586c1c65b7071aec78f02c5587c76c5011159cd76b3d6f1255f40e48e850abc")
+              "@sha256:803d2b80b6913e562837d69f037f39bfea80f51ef3f0dd0d8fdffbd95688fd6d")
 # sh as PID 1 ignores SIGTERM, so the entrypoint passes a platform's stop on to
 # lifecycle.py, which ends the run with job:run-failed, and the log still ends
 # with `pdt: exit N`.
