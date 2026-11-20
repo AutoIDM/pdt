@@ -248,7 +248,7 @@ def organization(project: str) -> Organization | None:
     account = gc.gcloud("auth", "list", "--filter=status:ACTIVE", "--format=value(account)")
     own = account.stdout.strip().rpartition("@")[2].lower()
     return Organization(primary, {primary.lower()} | ({own} if own and not
-                                                     own.endswith("gserviceaccount.com") else set()),
+                                                     own.endswith(".gserviceaccount.com") else set()),
                         False)
 
 
