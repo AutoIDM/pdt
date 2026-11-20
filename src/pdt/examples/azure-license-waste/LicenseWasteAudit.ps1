@@ -15,6 +15,9 @@
 #Requires -Version 7.0
 #Requires -Modules Microsoft.Graph.Authentication, Microsoft.Graph.Users, Microsoft.Graph.Identity.DirectoryManagement, ImportExcel
 
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingConvertToSecureStringWithPlainText', '', Justification = 'pdt gives the client secret to the job only as the PDT_AZURE_CLIENT_SECRET env var.')]
+param()
+
 $inactiveDays = if ($env:LICENSE_WASTE_INACTIVE_DAYS) { [int]$env:LICENSE_WASTE_INACTIVE_DAYS } else { 90 }
 $cutoff = (Get-Date).AddDays(-$inactiveDays)
 $prices = @{}
