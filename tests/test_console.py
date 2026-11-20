@@ -558,11 +558,20 @@ def test_a_character_whose_bytes_arrive_in_separate_reads_is_one_key():
     # A slow connection brings the rest of a sequence after Esc and `[` or `O` later.
     ([b"\x1b[", b"A", b"x"], ["up", "x"]), ([b"\x1bO", b"B", b"x"], ["down", "x"]),
     ([b"\x1b[1;", b"5C", b"x"], ["", "x"]),
-    # The Esc key alone sends nothing after Esc.
-    ([b"\x1b", b"x"], ["", "x"]),
 ])
 def test_the_rest_of_a_sequence_can_come_later_than_the_byte_after_esc(chunks, found):
     assert keys_of(b"", chunks, pause=0.08) == found
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows reads keys with ReadConsoleInputW")
+def test_the_esc_key_alone_sends_nothing_after_esc():
+    read, write = os.pipe()
+    os.write(write, b"\x1b")
+    assert console._posix_key(read) == ""
+    os.write(write, b"x")
+    assert console._posix_key(read) == "x"
+    os.close(write)
+    os.close(read)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows reads keys with ReadConsoleInputW")
