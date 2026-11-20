@@ -212,6 +212,64 @@ def test_a_folder_with_spaces_is_not_percent_encoded(tmp_path):
     assert not any("%20" in path.name for path in tmp_path.rglob("*"))
 
 
+class AzureClient:
+    """The Blob SDK container client over a list of blob names: walk_blobs
+    yields each page's folders before its files, as the service does."""
+
+    def __init__(self, pages):
+        self.pages = pages
+        self.prefixes = []
+
+    def walk_blobs(self, name_starts_with):
+        self.prefixes.append(name_starts_with)
+        for page in self.pages:
+            below = [name[len(name_starts_with):] for name in page
+                     if name.startswith(name_starts_with)]
+            folders = sorted({rest.split("/", 1)[0] + "/" for rest in below if "/" in rest})
+            files = [rest for rest in below if "/" not in rest]
+            for rest in folders + files:
+                yield type("Item", (), {"name": name_starts_with + rest})()
+
+    def get_blob_client(self, name):
+        names = [blob for page in self.pages for blob in page]
+        return type("BlobClient", (), {"exists": lambda self: name in names})()
+
+
+@pytest.mark.parametrize(("path", "prefix"), [("", "report/"), ("runs", "report/runs/"),
+                                              ("runs/", "report/runs/")])
+def test_azure_ls_lists_the_folder_with_a_trailing_slash(monkeypatch, path, prefix):
+    client = AzureClient([[prefix + "a.csv", prefix + "sub/b.csv"]])
+    monkeypatch.setattr(storage.Azure, "client", client)
+    store = Store("abfs://pdt-data-abc@pdtdataabc.dfs.core.windows.net/report/", "token")
+    folder = prefix[len("report/"):]
+    assert store.ls(path) == [folder + "a.csv", folder + "sub"]
+    assert client.prefixes == [prefix]
+
+
+def test_azure_ls_sorts_folders_and_files_across_pages(monkeypatch):
+    monkeypatch.setattr(storage.Azure, "client", AzureClient([
+        ["report/z/1.csv", "report/a.csv", "report/zz.csv"],
+        ["report/b/2.csv", "report/z/3.csv", "report/m.csv"],
+    ]))
+    store = Store("abfs://pdt-data-abc@pdtdataabc.dfs.core.windows.net/report/", "token")
+    assert store.ls() == ["a.csv", "b", "m.csv", "z", "zz.csv"]
+
+
+def test_azure_ls_of_a_file_returns_the_file(monkeypatch):
+    client = AzureClient([["report/runs/a.csv"]])
+    monkeypatch.setattr(storage.Azure, "client", client)
+    store = Store("abfs://pdt-data-abc@pdtdataabc.dfs.core.windows.net/report/", "token")
+    assert store.ls("runs/a.csv") == ["runs/a.csv"]
+    assert client.prefixes == ["report/runs/a.csv/"]
+
+
+def test_azure_ls_of_a_missing_folder_raises(monkeypatch):
+    monkeypatch.setattr(storage.Azure, "client", AzureClient([["report/a.csv"]]))
+    store = Store("abfs://pdt-data-abc@pdtdataabc.dfs.core.windows.net/report/", "token")
+    with pytest.raises(FileNotFoundError):
+        store.ls("missing")
+
+
 def test_gcs_filesystem_does_not_read_the_bucket_layout():
     extended = pytest.importorskip("gcsfs.extended_gcsfs")
     fs = storage.GCS("gs://pdt-data-x/my-report/", "anon").filesystem()
