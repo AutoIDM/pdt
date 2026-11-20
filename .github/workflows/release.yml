@@ -21,8 +21,8 @@ jobs:
     outputs:
       sign: ${{ (startsWith(github.ref, 'refs/tags/v') || inputs.sign) && vars.SIGNING_ENDPOINT != '' && vars.SIGNING_ACCOUNT != '' && vars.SIGNING_PROFILE != '' }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
@@ -36,7 +36,7 @@ jobs:
       - name: The wheel must hold the package and its examples
         run: uv run --python 3.12 python scripts/smoke.py
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist
           path: dist/
@@ -49,7 +49,7 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dist
           path: dist/
@@ -67,8 +67,8 @@ jobs:
       version: ${{ steps.zip.outputs.version }}
       sha256: ${{ steps.zip.outputs.sha256 }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
 
       - shell: pwsh
         run: installer/build-launcher.ps1 -Version (uv version --short) -Out dist/launcher/pdt.exe
@@ -111,7 +111,7 @@ jobs:
           if ($s.Status -ne 'Valid' -or -not $s.TimeStamperCertificate) { throw "pdt.exe signature: $($s.Status) $($s.StatusMessage)" }
           "pdt.exe is signed by $($s.SignerCertificate.Subject)"
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: launcher
           path: dist/launcher/pdt.exe
@@ -124,7 +124,7 @@ jobs:
           "version=$(uv version --short)" >> $env:GITHUB_OUTPUT
           "sha256=$hash" >> $env:GITHUB_OUTPUT
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: winget-launcher
           path: pdt-windows-x64.zip
@@ -145,7 +145,7 @@ jobs:
           fi
 
       - if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           files: pdt-windows-x64.zip
           body_path: release-notes.md
@@ -162,15 +162,15 @@ jobs:
     env:
       MSI: pdt-windows-x64-${{ needs.windows-launcher.outputs.version }}.msi
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: launcher
           path: dist/launcher
 
       - id: wix
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: build/wix/bin
           key: wix-${{ hashFiles('installer/build-wix.ps1') }}
@@ -220,13 +220,13 @@ jobs:
           if ($s.Status -ne 'Valid' -or -not $s.TimeStamperCertificate) { throw "${{ env.MSI }} signature: $($s.Status) $($s.StatusMessage)" }
           "${{ env.MSI }} is signed by $($s.SignerCertificate.Subject)"
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: msi
           path: ${{ env.MSI }}
 
       - if: startsWith(github.ref, 'refs/tags/') && needs.publish.result == 'success'
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           files: ${{ env.MSI }}
 
@@ -254,7 +254,7 @@ jobs:
       - id: reuse
         if: steps.find.outputs.run-id
         continue-on-error: true
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: wingetcreate-${{ env.COMMIT }}
           path: wingetcreate
@@ -262,7 +262,7 @@ jobs:
           github-token: ${{ github.token }}
 
       - if: steps.reuse.outcome != 'success'
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: microsoft/winget-create
           ref: ${{ env.COMMIT }}
@@ -270,7 +270,7 @@ jobs:
           persist-credentials: false
 
       - if: steps.reuse.outcome != 'success'
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: src/global.json
 
@@ -280,13 +280,13 @@ jobs:
 
       - if: steps.reuse.outcome != 'success'
         continue-on-error: true
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: wingetcreate-${{ env.COMMIT }}
           path: wingetcreate/WingetCreateCLI.exe
           retention-days: 7
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: wingetcreate
           path: wingetcreate/WingetCreateCLI.exe
@@ -302,17 +302,17 @@ jobs:
       VERSION: ${{ needs.windows-launcher.outputs.version }}
       SHA256: ${{ needs.windows-launcher.outputs.sha256 }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
 
       - run: uv run --no-project --python 3.12 python scripts/render_winget_manifests.py --version ${{ env.VERSION }} --sha256 ${{ env.SHA256 }} --out winget/rendered
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: winget-manifests
           path: winget/rendered/
 
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: wingetcreate
 
