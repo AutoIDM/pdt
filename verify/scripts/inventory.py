@@ -11,11 +11,18 @@ hold resources that have nothing to do with pdt.
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
+# Each call starts its own CLI process. Eight at a time keeps a 4-CPU CI runner
+# busy and no API sees more than eight calls at once; the CLIs retry a throttled
+# call.
+CALLS = threading.BoundedSemaphore(8)
 MANAGED = {"managed-by": "pdt"}
 UNTAGGED = "untagged"
 SHARED = "shared"
@@ -76,8 +83,16 @@ def classify(resource: Resource, apps: list[str]) -> Owner:
     return SHARED
 
 
+def parallel(function, items) -> list:
+    """function(item) for each item, run at the same time, in the order of items."""
+    items = list(items)
+    with ThreadPoolExecutor(max(len(items), 1)) as pool:
+        return list(pool.map(function, items))
+
+
 def run_json(command: list[str]):
-    proc = subprocess.run(command, capture_output=True, text=True, check=False)
+    with CALLS:
+        proc = subprocess.run(command, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout).strip()
         raise InventoryError(f"{' '.join(command[:4])} failed: {detail}")
@@ -104,20 +119,21 @@ def google_not_found(detail: str) -> bool:
 
 def gcloud_error(*args: str) -> str:
     """The error gcloud printed, or "" when the call succeeded."""
-    proc = subprocess.run(["pdt", "gcloud", *args, "--format", "json"],
-                          capture_output=True, text=True, check=False)
+    with CALLS:
+        proc = subprocess.run(["pdt", "gcloud", *args, "--format", "json"],
+                              capture_output=True, text=True, check=False)
     return "" if proc.returncode == 0 else (proc.stderr or proc.stdout).strip() or "failed"
 
 
 def aws_functions(region: str) -> Inventory:
-    found = []
-    for item in (aws(region, "lambda", "list-functions") or {}).get("Functions") or []:
-        if not item["FunctionName"].startswith("pdt-"):
-            continue
+    def resource(item) -> Resource:
         arn = item["FunctionArn"]
         tags = (aws(region, "lambda", "list-tags", "--resource", arn) or {}).get("Tags") or {}
-        found.append(Resource("lambda function", arn, tags, item["FunctionName"]))
-    return found
+        return Resource("lambda function", arn, tags, item["FunctionName"])
+
+    listed = (aws(region, "lambda", "list-functions") or {}).get("Functions") or []
+    return parallel(resource, [item for item in listed
+                               if item["FunctionName"].startswith("pdt-")])
 
 
 def aws_caller_role(region: str) -> str:
@@ -131,29 +147,33 @@ def aws_caller_role(region: str) -> str:
 def aws_roles(region: str) -> Inventory:
     # The role this run signs in with may share the pdt- prefix, and it is
     # not something deploy made.
-    own = aws_caller_role(region)
-    found = []
-    for item in (aws(region, "iam", "list-roles") or {}).get("Roles") or []:
-        name = item["RoleName"]
-        if not name.startswith("pdt-") or name == own:
-            continue
-        listed = aws(region, "iam", "list-role-tags", "--role-name", name) or {}
+    def resource(item) -> Resource:
+        listed = aws(region, "iam", "list-role-tags", "--role-name", item["RoleName"]) or {}
         tags = {tag["Key"]: tag["Value"] for tag in listed.get("Tags") or []}
-        found.append(Resource("iam role", item["Arn"], tags, name))
-    return found
+        return Resource("iam role", item["Arn"], tags, item["RoleName"])
+
+    own, roles = parallel(lambda read: read(), [
+        lambda: aws_caller_role(region),
+        lambda: (aws(region, "iam", "list-roles") or {}).get("Roles") or []])
+    return parallel(resource, [item for item in roles
+                               if item["RoleName"].startswith("pdt-")
+                               and item["RoleName"] != own])
 
 
 def aws_log_groups(region: str) -> Inventory:
-    found = []
-    for prefix in AWS_LOG_PREFIXES:
+    def groups(prefix: str) -> list:
         listed = aws(region, "logs", "describe-log-groups",
                      "--log-group-name-prefix", prefix) or {}
-        for item in listed.get("logGroups") or []:
-            arn = (item.get("logGroupArn") or item["arn"]).removesuffix(":*")
-            tags = (aws(region, "logs", "list-tags-for-resource",
-                        "--resource-arn", arn) or {}).get("tags") or {}
-            found.append(Resource("log group", arn, tags, item["logGroupName"]))
-    return found
+        return listed.get("logGroups") or []
+
+    def resource(item) -> Resource:
+        arn = (item.get("logGroupArn") or item["arn"]).removesuffix(":*")
+        tags = (aws(region, "logs", "list-tags-for-resource",
+                    "--resource-arn", arn) or {}).get("tags") or {}
+        return Resource("log group", arn, tags, item["logGroupName"])
+
+    return parallel(resource, [item for listed in parallel(groups, AWS_LOG_PREFIXES)
+                               for item in listed])
 
 
 def aws_secrets(region: str) -> Inventory:
@@ -173,10 +193,9 @@ def aws_schedules(region: str) -> Inventory:
         if group["Name"] != "pdt":
             continue
         try:
-            tagged = aws(region, "scheduler", "list-tags-for-resource",
-                         "--resource-arn", group["Arn"]) or {}
-            schedules = aws(region, "scheduler", "list-schedules",
-                            "--group-name", group["Name"]) or {}
+            tagged, schedules = parallel(lambda args: aws(region, "scheduler", *args) or {}, [
+                ("list-tags-for-resource", "--resource-arn", group["Arn"]),
+                ("list-schedules", "--group-name", group["Name"])])
         except InventoryError as error:
             if "(ResourceNotFoundException)" not in str(error):
                 raise
@@ -236,22 +255,22 @@ def aws_clusters(region: str) -> Inventory:
 def aws_task_definitions(region: str) -> Inventory:
     listed = aws(region, "ecs", "list-task-definitions",
                  "--family-prefix", "pdt-", "--status", "ACTIVE") or {}
-    return [Resource("ecs task definition", arn, aws_ecs_tags(region, arn),
-                     arn.rsplit("/", 1)[-1])
-            for arn in listed.get("taskDefinitionArns") or []]
+    return parallel(lambda arn: Resource("ecs task definition", arn, aws_ecs_tags(region, arn),
+                                         arn.rsplit("/", 1)[-1]),
+                    listed.get("taskDefinitionArns") or [])
 
 
 def aws_repositories(region: str) -> Inventory:
-    found = []
-    for item in (aws(region, "ecr", "describe-repositories") or {}).get("repositories") or []:
-        name = item["repositoryName"]
-        if name != "pdt" and not name.startswith("pdt-"):
-            continue
+    def resource(item) -> Resource:
         arn = item["repositoryArn"]
         listed = aws(region, "ecr", "list-tags-for-resource", "--resource-arn", arn) or {}
         tags = {tag["Key"]: tag["Value"] for tag in listed.get("tags") or []}
-        found.append(Resource("ecr repository", arn, tags, name))
-    return found
+        return Resource("ecr repository", arn, tags, item["repositoryName"])
+
+    listed = (aws(region, "ecr", "describe-repositories") or {}).get("repositories") or []
+    return parallel(resource, [item for item in listed
+                               if item["repositoryName"] == "pdt"
+                               or item["repositoryName"].startswith("pdt-")])
 
 
 def aws_tagged(region: str) -> Inventory:
@@ -281,8 +300,8 @@ def aws_inventory(settings: dict[str, str]) -> Inventory:
     # The tagging API omits an untagged leftover, so the per-kind listings
     # above it decide what exists and it only adds what they do not cover.
     found: dict[str, Resource] = {}
-    for source in AWS_SOURCES:
-        for resource in source(settings["region"]):
+    for listed in parallel(lambda source: source(settings["region"]), AWS_SOURCES):
+        for resource in listed:
             found.setdefault(resource.id, resource)
     return sorted(found.values(), key=lambda resource: resource.id)
 
@@ -299,44 +318,56 @@ def azure_deleted_vaults() -> Inventory:
     return found
 
 
+def azure_group(group_name: str) -> Inventory:
+    if az("group", "exists", "--name", group_name) is not True:
+        return []
+    group, items = parallel(lambda args: az(*args), [
+        ("group", "show", "--name", group_name),
+        ("resource", "list", "--resource-group", group_name)])
+    found = [Resource("resource group", group["id"], group.get("tags") or {}, group["name"])]
+    for item in items or []:
+        found.append(Resource(item["type"], item["id"], item.get("tags") or {}, item["name"]))
+    return found
+
+
 def azure_inventory(settings: dict[str, str]) -> Inventory:
-    found = azure_deleted_vaults()
     # A named environment is the user's own, so its group is not pdt's to empty.
     groups = [settings["resource_group"]]
     if not settings["environment"]:
         groups.append(AZURE_SHARED_GROUP)
-    for group_name in groups:
-        if az("group", "exists", "--name", group_name) is not True:
-            continue
-        group = az("group", "show", "--name", group_name)
-        found.append(Resource("resource group", group["id"], group.get("tags") or {},
-                              group["name"]))
-        for item in az("resource", "list", "--resource-group", group_name) or []:
-            found.append(Resource(item["type"], item["id"], item.get("tags") or {},
-                                  item["name"]))
+    found = []
+    for listed in parallel(lambda read: read(), [
+            azure_deleted_vaults, *(functools.partial(azure_group, name) for name in groups)]):
+        found.extend(listed)
     return found
 
 
 def google_cloud_inventory(settings: dict[str, str]) -> Inventory:
     project, region = settings["project"], settings["region"]
+
+    def asset_name(item) -> str:
+        return str(item.get("displayName") or item["name"]).rsplit("/", 1)[-1]
+
+    def describe_error(item) -> str:
+        describe = GOOGLE_DESCRIBE[item["assetType"]](asset_name(item),
+                                                      item.get("location") or region)
+        return gcloud_error(*describe, "--project", project)
+
+    assets, jobs, own, accounts = parallel(lambda args: gcloud(*args), [
+        ("asset", "search-all-resources", f"--scope=projects/{project}",
+         "--asset-types=" + ",".join(GOOGLE_DESCRIBE)),
+        ("scheduler", "jobs", "list", "--location", region, "--project", project),
+        ("config", "get-value", "account"),
+        ("iam", "service-accounts", "list", "--project", project)])
     found = []
-    assets = gcloud("asset", "search-all-resources",
-                    f"--scope=projects/{project}",
-                    "--asset-types=" + ",".join(GOOGLE_DESCRIBE)) or []
-    for item in assets:
-        name = str(item.get("displayName") or item["name"]).rsplit("/", 1)[-1]
-        if not name.startswith("pdt"):
-            continue
-        describe = GOOGLE_DESCRIBE[item["assetType"]](name, item.get("location") or region)
-        error = gcloud_error(*describe, "--project", project)
+    assets = [item for item in assets or [] if asset_name(item).startswith("pdt")]
+    for item, error in zip(assets, parallel(describe_error, assets)):
         if google_not_found(error):
             continue
         note = f"describe failed: {error}" if error else ""
         found.append(Resource(item["assetType"], item["name"],
-                              dict(item.get("labels") or {}), name, note))
-    jobs = gcloud("scheduler", "jobs", "list",
-                  "--location", region, "--project", project) or []
-    for item in jobs:
+                              dict(item.get("labels") or {}), asset_name(item), note))
+    for item in jobs or []:
         name = str(item["name"]).rsplit("/", 1)[-1]
         if not name.startswith("pdt"):
             continue
@@ -346,9 +377,7 @@ def google_cloud_inventory(settings: dict[str, str]) -> Inventory:
                               dict(MANAGED) if managed else {}, name))
     # The account this run signs in with may share the pdt prefix, and it is
     # not something deploy made.
-    own = gcloud("config", "get-value", "account") or ""
-    accounts = gcloud("iam", "service-accounts", "list", "--project", project) or []
-    for item in accounts:
+    for item in accounts or []:
         name = str(item["email"]).split("@", 1)[0]
         if not name.startswith("pdt") or item["email"] == own:
             continue

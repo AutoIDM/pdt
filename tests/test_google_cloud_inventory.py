@@ -57,10 +57,10 @@ def test_an_asset_its_service_confirms_is_kept(monkeypatch):
     found = inventory.google_cloud_inventory(SETTINGS)
     assert [(resource.name, resource.note) for resource in found] == [
         ("pdt-app-one-env", ""), ("pdt-app-one", "")]
-    assert asked == [
-        ("secrets", "describe", "pdt-app-one-env", "--project", "verify"),
+    assert sorted(asked) == [
         ("run", "jobs", "describe", "pdt-app-one", "--region", "europe-west1",
          "--project", "verify"),
+        ("secrets", "describe", "pdt-app-one-env", "--project", "verify"),
     ]
 
 

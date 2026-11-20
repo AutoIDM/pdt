@@ -1,3 +1,7 @@
+import subprocess
+import threading
+import time
+
 import pytest
 
 import inventory
@@ -69,3 +73,47 @@ def test_the_verify_role_policy_allows_every_inventory_call():
     allowed = {action for statement in aws_role.policy("123456789012")["Statement"]
                for action in statement["Action"]}
     assert {"batch:DescribeComputeEnvironments", "tag:GetResources"} <= allowed
+
+
+def test_the_listers_and_the_tag_calls_of_one_inventory_run_at_the_same_time(monkeypatch):
+    both_tag_calls = threading.Barrier(2, timeout=5)
+
+    def aws(region, service, action, *args):
+        if action == "list-functions":
+            return {"Functions": [
+                {"FunctionName": f"pdt-{name}", "FunctionArn": f"arn:aws:lambda:x:1:pdt-{name}"}
+                for name in ("b", "a")]}
+        if action == "list-tags":
+            both_tag_calls.wait()
+            return {"Tags": {"managed-by": "pdt"}}
+        if action == "list-roles":
+            return {"Roles": [{"RoleName": "pdt-runner", "Arn": "arn:aws:iam::1:role/pdt-runner"}]}
+        if action == "list-role-tags":
+            return {"Tags": [{"Key": "managed-by", "Value": "pdt"}]}
+        return {}
+
+    monkeypatch.setattr(inventory, "aws", aws)
+    monkeypatch.setattr(inventory, "AWS_SOURCES", (inventory.aws_functions, inventory.aws_roles))
+    found = inventory.aws_inventory({"region": "us-east-1"})
+    assert [resource.name for resource in found] == ["pdt-runner", "pdt-a", "pdt-b"]
+    assert all(resource.tags == {"managed-by": "pdt"} for resource in found)
+
+
+def test_at_most_eight_cli_processes_run_at_once(monkeypatch):
+    lock = threading.Lock()
+    running, most = 0, 0
+
+    def run(command, **kwargs):
+        nonlocal running, most
+        with lock:
+            running += 1
+            most = max(most, running)
+        time.sleep(0.05)
+        with lock:
+            running -= 1
+        return subprocess.CompletedProcess(command, 0, "{}", "")
+
+    monkeypatch.setattr(inventory.subprocess, "run", run)
+    assert inventory.parallel(lambda n: inventory.aws("us-east-1", "sts", str(n)), range(20)) \
+        == [{}] * 20
+    assert most == 8
