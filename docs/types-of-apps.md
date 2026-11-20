@@ -16,7 +16,7 @@ An app's profile sets which services pdt picks for it on each cloud.
 | **Secrets** | Secrets Manager | Key Vault | Secret Manager | `.env` file, read at each run |
 | **Storage** (job files and state) | S3 | Blob Storage | Cloud Storage | `%ProgramData%\pdt` |
 | **Logs** | CloudWatch Logs | Log Analytics | Cloud Logging | Log files |
-| **Alerts** | Slack, Teams, email | Slack, Teams, email | Slack, Teams, email | Slack, Teams, email |
+| **Alerts** | Slack, Teams | Slack, Teams | Slack, Teams | Slack, Teams |
 
 ## Web Apps
 
@@ -27,4 +27,4 @@ An app's profile sets which services pdt picks for it on each cloud.
 | **Secrets** | Secret Manager |
 | **Storage** (app files) | Cloud Storage |
 | **Logs** | Cloud Logging |
-| **Alerts** | Slack, Teams, email |
+| **Alerts** | Slack, Teams |

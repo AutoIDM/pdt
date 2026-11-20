@@ -93,9 +93,8 @@ Put these keys under `platform:` in the project's `pdt.yml`, in an `apps:` entry
 | Key | Allowed values | Default | What it does |
 | --- | --- | --- | --- |
 | `provider` | `aws`, `azure`, `google-cloud`, or `windows`. | No default. `pdt init` writes it. `pdt validate` reports an app with no provider. | Selects where the app runs. |
-| `region` | A region name of the cloud provider, for example `us-east-1`. | No default. The first deploy suggests a region, asks you to confirm it, and saves the answer. With `--yes`, the deploy takes the suggestion. | Selects where the job and its data live. The `windows` provider does not use it. |
+| `region` | A region name of the cloud provider, for example `us-east-1`. | No default. The first deploy suggests a region, asks you to confirm it, and saves the answer. With `--yes`, the deploy takes the suggestion. | Selects where the app and its data live. The `windows` provider does not use it. |
 | `timezone` | See [`job:` keys](#job-keys). | | The time zone of a job's schedule. The same as `job.timezone`. |
-| `job` | A block of [`job:` keys](#job-keys). | Empty. | Sets when a job runs. Only a job takes it. |
 
 ### AWS keys
 
@@ -117,7 +116,7 @@ platform:
 
 | Key | Allowed values | Default | What it does |
 | --- | --- | --- | --- |
-| `subscription` | An Azure subscription ID. | The active subscription of the Azure CLI (`az account show`). A deploy at a terminal saves it; a deploy with no one to ask (CI) uses it and does not save it. pdt asks nothing. When you are not logged in, pdt asks at a terminal to open the browser login, and a deploy with no one to ask stops. | Selects the subscription. When the Azure CLI uses another subscription, the deploy switches the Azure CLI to this one. |
+| `subscription` | An Azure subscription ID. | The active subscription of the Azure CLI (`az account show`). A deploy at a terminal saves it; a deploy with no one to ask (CI) uses it and does not save it. pdt asks nothing. When you are not logged in, pdt asks at a terminal to open the browser login, and a deploy with no one to ask stops. When the value is not a subscription that your login can use, the deploy lists your subscriptions and asks you to choose one. | Selects the subscription. When the Azure CLI uses another subscription, the deploy switches the Azure CLI to this one. |
 | `resource_group` | A resource group name. | `pdt` | Names the resource group that holds the project's resources. |
 | `environment` | An environment you already own, written as `<resource-group>/<name>`. | The shared environment `pdt-<region>` in the resource group `pdt-shared`. | Selects the Container Apps environment. pdt never creates, changes, or deletes an environment that you name here. |
 
@@ -135,7 +134,7 @@ platform:
 
 | Key | Allowed values | Default | What it does |
 | --- | --- | --- | --- |
-| `project` | A Google Cloud project ID. | The deploy lists your projects, asks you to choose one, and saves the answer. | Selects the project. |
+| `project` | A Google Cloud project ID. | `PDT_GOOGLE_CLOUD_PROJECT`. Else the deploy lists your projects, asks you to choose one or to create one, and saves the answer; a deploy with no one to ask stops. | Selects the project. |
 
 ```yaml
 # pdt.yml
@@ -162,7 +161,8 @@ Put these keys at the top level of the app's `pdt.yml`, or in its entry in the `
 | Key | Allowed values | Default | What it does |
 | --- | --- | --- | --- |
 | `name` | The name of the app folder. | In the app's `pdt.yml`, the folder name. An `apps:` entry must have it. | Connects an `apps:` entry to an app folder. In the app's `pdt.yml` it must match the folder name. |
-| `app_profile` | `job` or `web`. | `job` | Selects the kind of app. A `job` runs on a schedule and exits. A `web` app is an HTTP server behind a sign-in. |
+| `app_profile` | `job` or `web`. | `job` | Selects the kind of app. A `job` runs on a schedule and exits. A `web` app is an HTTP server behind a sign-in. Only the `google-cloud` provider runs a web app; `pdt validate` reports `web` on another provider. |
+| `job` | A block of [`job:` keys](#job-keys). | Empty. | Sets when a job runs. Only a job takes it. |
 | `schedule` | See [`job:` keys](#job-keys). | | A job's schedule. The same as `job.schedule`. |
 | `timezone` | A time zone name, for example `America/Chicago`. | `platform.timezone`, then `Etc/UTC`. | Sets the time zone of this app's schedule. The `windows` provider ignores it. |
 | `platform` | A block of [`platform:` keys](#platform-keys). | The `platform:` block of `pdt.yml`. | Replaces each named key for this app. |
@@ -171,7 +171,7 @@ Put these keys at the top level of the app's `pdt.yml`, or in its entry in the `
 | `storage` | `true`, `false`, or a block of [`storage:` keys](#storage-keys). | `true` | Gives the app a storage folder. See [Keeping files between runs](storage.md). |
 | `web` | A block of [`web:` keys](#web-keys). | Empty. | Sets the port, the health check, the sign-in, and the size of a web app. Only a web app takes it. |
 | `enabled` | `true` or `false`. | `true` | With `false`, every command except `pdt list` acts as if the app is not there. `pdt destroy` still accepts the app while it is deployed. A deployed schedule keeps running. Run `pdt pause` or `pdt destroy` first. |
-| `pause` | `true` or `false`. | `false` | With `true`, the deployed schedule starts no runs. You can still start a run with `pdt run APP --deployed`. A paused web app is stopped. `pdt pause` and `pdt unpause` write this key. |
+| `pause` | `true` or `false`. | `false` | With `true`, the deployed schedule starts no runs. You can still start a run of a paused job with `pdt run APP --deployed`. A paused web app is stopped; `pdt run APP --deployed` opens its URL, and the app stays paused. `pdt pause` and `pdt unpause` write this key. |
 | `docker-build` | `auto`, `local`, or `cloud`. | The top-level `pdt.yml` value, then `auto`. | Sets where a deploy builds the image. `auto` uses Docker on this computer when Docker answers, else the cloud. `local` uses only Docker. `cloud` uses only the cloud. `pdt validate` reports this key for the `windows` provider. |
 | `alerts` | A list of [alert entries](#alerts-entries), or `false`. | The top-level `pdt.yml` list. | Replaces the whole project list for this app. |
 | `run_scripts` | See [PowerShell keys](#powershell-keys). | Not set. | Selects the scripts of a PowerShell app. |
@@ -225,7 +225,7 @@ job:
 | Key | Allowed values | Default | What it does |
 | --- | --- | --- | --- |
 | `enabled` | `true` or `false`. | `true` | Gives the app its own storage folder. |
-| `read` | A list of names of other apps in the project. | Empty. | Lets this app read the storage folder of each named app. A deployed web app finds each folder as read-only files under `/pdt/storage/<app>/`. A job opens it with `pdt.utils.storage.store(app="<app>")`; for a job, this works with the `azure` provider only. Run `pdt deploy APP` after you change the list. `pdt validate` reports a name that is not an app of the project, the app's own name, and an app with `storage: false`. |
+| `read` | A list of names of other apps in the project. | Empty. | Lets this app read the storage folder of each named app. A web app finds each folder under `PDT_STORAGE_READ_DIR`. A job opens it with `pdt.utils.storage.store(app="<app>")`; for a job, this works with the `azure` provider only, and the job needs `storage.enabled: true`. Run `pdt deploy APP` after you change the list. |
 
 ```yaml
 # dashboard/pdt.yml
@@ -233,6 +233,18 @@ storage:
   enabled: false
   read: [github-data]
 ```
+
+`pdt validate` reports each of these in `storage.read`:
+
+- a name that is not an app of the project
+- a name listed twice
+- the app's own name
+- an app with `storage: false`
+- an app on another provider
+- a job on a provider other than `azure`
+- a job with `storage.enabled: false`
+
+See [Reading another app's files](storage.md#reading-another-apps-files) for the folders that a web app reads.
 
 ### `web:` keys
 
@@ -255,7 +267,7 @@ Every web app has a sign-in. `web.auth` needs `provider`, and `allowed_domains`,
 | `allowed_domains` | A list of Google Workspace domains, for example `[example.com]`. | Empty. | Lets every account of each domain enter. |
 | `allowed_groups` | A list of Google group addresses, for example `[sales@example.com]`. | Empty. | Lets every member of each group enter. |
 
-IAP signs visitors in with a Google-managed OAuth client, which serves only accounts of the Google Cloud project's own organization. A group member from outside the organization cannot sign in. A deploy stops before it changes anything when the project has no organization. It also stops when a domain in `allowed_domains` is not a domain of the organization. pdt can list the organization's domains only when the deployer is a Google Workspace admin and the token has the `admin.directory.domain.readonly` scope. Otherwise, pdt accepts the organization's primary domain and the deployer's own domain, and warns about each other domain.
+IAP signs visitors in with a Google-managed OAuth client, which serves only accounts of the Google Cloud project's own organization. A group member from outside the organization cannot sign in. A deploy stops when the project has no organization. It also stops when a domain in `allowed_domains` is not a domain of the organization. The deploy makes this check after it enables the Google Cloud APIs it needs, and before it creates any resource for the app. pdt can list the organization's domains only when the deployer is a Google Workspace admin and the token has the `admin.directory.domain.readonly` scope. Otherwise, pdt accepts the organization's primary domain and the deployer's own domain, and warns about each other domain. When the deployer may not read the project's organization, pdt warns and does not check.
 
 IAP sends the email of the visitor to the app in the header `X-Goog-Authenticated-User-Email`, as `accounts.google.com:<email>`.
 
@@ -264,7 +276,7 @@ IAP sends the email of the visitor to the app in the header `X-Goog-Authenticate
 | Key | Allowed values | Default | What it does |
 | --- | --- | --- | --- |
 | `cpu` | `1`, `2`, `4`, `6`, or `8`. | `1` | Sets the vCPUs of each instance. |
-| `memory` | A size in `MiB` or `GiB`, from `512MiB`. At most 4 GiB for each vCPU. | `512MiB` | Sets the memory of each instance. Files that the app writes to its local disk use this memory. |
+| `memory` | A size in `MiB` or `GiB`. At least `512MiB` with 1 or 2 vCPUs, `2GiB` with 4, and `4GiB` with 6 or 8. At most 4 GiB for each vCPU. | `512MiB` | Sets the memory of each instance. Files that the app writes to its local disk use this memory. |
 | `timeout` | A number of seconds from 1 to 3600. | `300` | Sets the longest time that one request may take. |
 | `min_instances` | A number from 0 to `max_instances`. | `0` | Sets the instances that keep running with no requests. Each one costs money all the time. With `0`, the first request after an idle time waits for an instance to start. |
 | `max_instances` | A number from 1 to 1000. | `3` | Sets the most instances that run at the same time. |
@@ -310,10 +322,10 @@ A deploy sends each listed name that has a value to the app's secrets in the clo
 
 pdt also reads the app's code and adds each env var name that it finds:
 
-- In Python, `os.environ["NAME"]` adds a required name. `os.environ.get("NAME")` and `os.getenv("NAME")` add an optional name.
-- In PowerShell, `$env:NAME` adds a required name, unless the scripts set it. To make it optional, list it under `optional`.
+- In Python, in `run.py` and the other `.py` files of the app folder, `os.environ["NAME"]` adds a required name. `os.environ.get("NAME")` and `os.getenv("NAME")` add an optional name.
+- In PowerShell, `$env:NAME` adds a required name. To make it optional, list it under `optional`.
 
-This scan skips each name that starts with `PDT_`. List each `PDT_` name that your app needs, or the deploy does not send it. An alert entry adds its own webhook name, so do not list that name.
+This scan skips each name that the `env:` block already lists, each name that the code sets, common system names such as `PATH`, `HOME`, `TEMP`, and `USERPROFILE`, and each name that starts with `PDT_`. It does not find a name that the code builds at run time. List each `PDT_` name that your app needs, or the deploy does not send it. An alert entry adds its own webhook name, so do not list that name.
 
 A name that ends in `_PATH` names a file. A deploy reads the file and sends its contents as `<NAME>_B64`. pdt looks for a relative path next to each `.env` file, then in the app folder, then in the project folder. A value for `<NAME>_B64` also satisfies a `required` name `<NAME>_PATH`. A deploy sends only the env vars that the app lists (in its own `pdt.yml` or its `apps:` entry), that pdt finds in the code, or that the alert settings need. To set `<NAME>_B64` yourself, list it too, for example under `optional`.
 
@@ -366,7 +378,7 @@ A `slack` entry needs `webhook` or `channel`, and cannot have both.
 | `webhook` | The workflow ID from the Teams workflow URL. Each `teams` entry needs it. | No default. | Selects the env var `TEAMS_WEBHOOK_<ID>`, which holds the URL. |
 | `name` | Any text, for example `IT alerts`. | The workflow ID. | Sets the label that pdt shows for this entry. |
 
-The webhook URL is a secret, so it goes in `.env` and not in the YAML file. `pdt alerts setup` saves it there. A deploy sends it to the job with the app's other secrets.
+The webhook URL is a secret, so it goes in `.env` and not in the YAML file. `pdt alerts setup` saves it there. A deploy sends it to the app with the app's other secrets.
 
 ```yaml
 # pdt.yml
@@ -404,8 +416,10 @@ TEAMS_WEBHOOK_0123456789ABCDEF=https://example.api.powerplatform.com/workflows/0
 | `job:run-started` | A run starts. |
 | `job:run-completed` | A run succeeds. |
 | `job:run-failed` | A run fails. |
-| `job:paused` | `pdt pause` stops the schedule. |
-| `job:unpaused` | `pdt unpause` lets the schedule start runs again. |
+| `job:paused` | `pdt pause` stops the schedule, or a web app's server. |
+| `job:unpaused` | `pdt unpause` lets the schedule start runs again, or starts a web app's server. |
+
+A deployed web app built from the generated Dockerfile starts its server through the same `lifecycle.py` as a job. So pdt sends `job:run-started` each time an instance of the server starts, and `job:run-completed` or `job:run-failed` when that instance stops, for example when the app scales to zero.
 
 These names have a special meaning in `events` and `exclude-events`:
 
@@ -426,7 +440,7 @@ Set these in the terminal or in the CI variables. pdt reads some of them before 
 | Env var | Allowed values | Default | What it does |
 | --- | --- | --- | --- |
 | `PDT_PROJECT` | The path of a folder that holds `pdt.yml`. | pdt looks in the current folder, then in each folder above it. | Names the project folder. |
-| `PDT_<APP>_<KEY>` | Any text. In `<APP>`, write `-` as `_`. `<APP>` and `<KEY>` are in capitals. | Not set. | Replaces the key `<key>` in the `config:` block of the app. `PDT_MY_REPORT_LOOKBACK_HOURS` replaces `lookback_hours` for `my-report`. The value is always text. A deployed job does not get this value. |
+| `PDT_<APP>_<KEY>` | Any text. In `<APP>`, write `-` as `_`. `<APP>` and `<KEY>` are in capitals. | Not set. | Replaces the key `<key>` in the `config:` block of the app. `PDT_MY_REPORT_LOOKBACK_HOURS` replaces `lookback_hours` for `my-report`. The value is always text. A deployed app does not get this value. |
 | `PDT_ERROR_WATCH` | `0`, `false`, `off`, or `no` turn off the line. | Not set. | Turns off the same line as `error-watch: false`. |
 | `CI` | Any text. | Not set. Build servers set it. | pdt treats the computer as a build server. pdt asks no sign-in questions, creates no `.env` file, and prints no `error-watch` line. See [Running pdt from CI](deploy.md#running-pdt-from-ci). |
 | `NO_COLOR` | Any text. | Not set. | Turns off color in the output. |
@@ -460,7 +474,7 @@ Put these in `.env`, in the terminal, or in the CI variables. See [Which value w
 
 ### Azure env vars
 
-Set the last five of these only to use a resource with another name. Each default name stays the same between deploys.
+Set `PDT_AZURE_MANAGED_IDENTITY`, `PDT_AZURE_LOG_WORKSPACE`, `PDT_AZURE_CONTAINER_REGISTRY`, and `PDT_AZURE_KEY_VAULT` only to use a resource with another name. Each default name stays the same between deploys.
 
 | Env var | Allowed values | Default | What it does |
 | --- | --- | --- | --- |
@@ -482,7 +496,7 @@ Set the last five of these only to use a resource with another name. Each defaul
 | `PDT_GOOGLE_CLOUD_PROJECT` | A Google Cloud project ID. | Not set. | Selects the project when `platform.project` is empty. |
 | `PDT_GOOGLE_CLOUD_REGION` | A Google Cloud region name. | Not set. | Selects the region when `platform.region` is empty. The deploy then asks no region question. |
 | `PDT_ARTIFACT_REGISTRY_REPO` | An Artifact Registry repository name. | `pdt` | Names the image repository. |
-| `PDT_CLOUD_RUN_SERVICE_ACCOUNT` | A service account email address. | `pdt-runner@<project>.iam.gserviceaccount.com` | Names the service account that jobs run as. |
+| `PDT_CLOUD_RUN_SERVICE_ACCOUNT` | A service account email address. | `pdt-runner@<project>.iam.gserviceaccount.com` | Names the service account that jobs run as. A web app runs as its own service account, `pdt-web-<app>`, which this variable does not change. A name longer than 30 characters keeps its first 25 characters and ends with `-` and 4 characters of a hash of the app name. |
 | `GOOGLE_APPLICATION_CREDENTIALS` | The path of a key file. | Not set. | pdt signs in with this file when you have no other sign-in. |
 | `CLOUDSDK_CONFIG` | A folder path. | `~/.config/gcloud`, or `%APPDATA%\gcloud` on Windows. | Names the gcloud settings folder that pdt reads to suggest a region. |
 | `CLOUDSDK_ACTIVE_CONFIG_NAME` | A gcloud configuration name. | The active gcloud configuration. | Selects the gcloud configuration that pdt reads to suggest a region. |
@@ -532,7 +546,7 @@ Your app reads these through `pdt.utils.entra`, to read Microsoft Graph data as 
 | `PDT_AZURE_CLIENT_ID` | An app registration client ID. | Not set. | Selects the app registration. |
 | `PDT_AZURE_CLIENT_SECRET` | A client secret. | Not set. | Signs in with a secret, when no certificate is set. |
 | `PDT_AZURE_PRIVATE_KEY_B64` | A base64 PFX certificate. | Not set. | Signs in with this certificate. It wins over `PDT_AZURE_PRIVATE_KEY_PATH`. |
-| `PDT_AZURE_PRIVATE_KEY_PATH` | The path of a PFX file. A relative path starts at the project folder. | Not set. | Signs in with the certificate in this file. |
+| `PDT_AZURE_PRIVATE_KEY_PATH` | The path of a PFX file. When the app runs, a relative path starts at the project folder. A deploy looks for a relative path next to each `.env` file, then in the app folder, then in the project folder, and sends the file as `PDT_AZURE_PRIVATE_KEY_B64`. | Not set. | Signs in with the certificate in this file. |
 | `PDT_AZURE_PRIVATE_KEY_PASSWORD` | A password. | Not set. | Opens a PFX certificate that has a password. |
 
 ## Env vars that pdt sets for your app
@@ -544,10 +558,10 @@ Do not set these env vars yourself.
 | --- | --- |
 | `PDT_STORAGE_URL` | The app's [storage folder](storage.md). When it is not set, `pdt.utils.storage` uses `.pdt/storage/<app>/` in the project. |
 | `PDT_STORAGE_READ_URLS` | JSON of the storage folder URL of each app in `storage.read`. |
-| `PDT_STORAGE_READ_DIR` | A web app: the folder that holds a read-only folder for each app in `storage.read`. `/pdt/storage` when deployed. |
+| `PDT_STORAGE_READ_DIR` | A web app: the folder that holds a folder for each app in `storage.read`. `/pdt/storage`, read-only, when deployed and in a local container. `.pdt/storage` in the project when `pdt run` starts a `run.py`. |
 | `PDT_PORT` | A web app: the port to listen on, from `web.port`. |
 | `PDT_URL` | A deployed web app: its own URL, `https://pdt-<app>-<project number>.<region>.run.app/`. |
-| `PDT_RUN_ID` | The ID of this run. |
+| `PDT_RUN_ID` | The ID of this run of a job. A deployed web app built from the generated Dockerfile also gets one, for each start of its server. A web app that `pdt run` starts from its `run.py` on your computer does not. An app's own `Dockerfile` sets its entrypoint, so it decides whether the app starts through `lifecycle.py`, which sets this value. |
 | `PDT_CONFIG_JSON` | The app's merged `config:` block as JSON, for a PowerShell script. |
 | `PDT_OUTPUT_DIR` | The folder for a PowerShell script's files. pdt keeps each file in the storage folder. |
 | `PDT_STATE_DIR` | The folder for a PowerShell script's state. See [Writing your own app](writing-apps.md). |
@@ -565,7 +579,7 @@ When a name has more than one value, pdt uses the first value in this list:
 
 `pdt run`, `pdt validate`, and `pdt deploy` print each `.env` file that they read, and each name that the terminal already sets.
 
-On a cloud provider, the job does not read your `.env` file. A deploy, or `pdt secrets APP save`, sends the values to the secret store of the cloud. On the `windows` provider, the job reads your `.env` file at each run.
+On a cloud provider, a deployed app does not read your `.env` file. A deploy, or `pdt secrets APP save`, sends the values to the secret store of the cloud. On the `windows` provider, the job reads your `.env` file at each run.
 
 ### `.env.<provider>` files
 
@@ -595,6 +609,6 @@ These files also change what pdt does with an app.
 | `run.py` | The job of a Python app, or the server of a web app. Next to `requirements.psd1`, it replaces the built-in runner of a PowerShell app. |
 | `run.ps1` | The only entry script of a PowerShell app. |
 | `requirements.psd1` | Replaces the PowerShell modules that pdt finds in the scripts. `pdt new APP --from-scripts` writes it. |
-| `Dockerfile` | Replaces the generated Dockerfile on a cloud provider. See [Bringing your own Dockerfile](platforms.md#bringing-your-own-dockerfile). A web app folder with a `Dockerfile` and a `pdt.yml` needs no `run.py`. `pdt validate` reports it on the `windows` provider. |
+| `Dockerfile` | Replaces the generated Dockerfile on a cloud provider. See [Bringing your own Dockerfile](platforms.md#bringing-your-own-dockerfile). A web app folder with a `Dockerfile` and a `pdt.yml` needs no `run.py`. The `windows` provider ignores it, and its deploy plan says so. |
 | `.dockerignore` | Keeps files out of the image. |
 | `env.template` | Lists the names that an example app needs, for you to copy into `.env`. pdt does not read it to run the app. |

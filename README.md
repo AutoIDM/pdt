@@ -2,7 +2,7 @@
 
 **Turn any script into a scheduled job in your cloud.**
 
-pdt builds, runs, and deploys scheduled jobs to AWS, Azure, Google Cloud, or Windows Task Scheduler. It gives every job the same [primitives](#primitives), chosen from years of deploying scheduled jobs for businesses on each cloud. No servers to run and nothing extra to install, and everything it makes lives in your own account.
+pdt builds, runs, and deploys scheduled jobs to AWS, Azure, Google Cloud, or Windows Task Scheduler. It gives every job the same [primitives](#primitives), chosen from years of deploying scheduled jobs for businesses on each cloud. No servers to run and nothing extra to install, and everything it makes lives in your own account. It also deploys web apps to Google Cloud (see [Types of apps](docs/types-of-apps.md)).
 
 ![What pdt does: your project folder goes through pdt deploy to a schedule on AWS, GCP, Azure, or Task Scheduler, and pdt runs, logs, health, and gui read the results back.](docs/what-is-pdt.svg)
 
@@ -12,7 +12,7 @@ pdt builds, runs, and deploys scheduled jobs to AWS, Azure, Google Cloud, or Win
 2. **One command to deploy** - No cloud skills needed. `pdt deploy` installs the tools it needs and opens the sign-in page for you.
 3. **Any cloud** - Move a job between AWS, Azure, Google Cloud, and Windows by changing one line.
 4. **Know the cost first** - See the plan and a monthly cost estimate before anything changes.
-5. **Know when it breaks** - Health checks, logs, a dashboard, and alerts to Slack, Teams, or email.
+5. **Know when it breaks** - Health checks, logs, a dashboard, and alerts to Slack or Teams.
 
 ## Primitives
 
@@ -25,15 +25,17 @@ Every job gets the same building blocks. pdt picks the service on each cloud for
 | **Secrets** | Secrets Manager | Key Vault | Secret Manager | `.env` file, read at each run |
 | **Storage** (job files and state) | S3 | Blob Storage | Cloud Storage | `%ProgramData%\pdt` |
 | **Logs** | CloudWatch Logs | Log Analytics | Cloud Logging | Log files |
-| **Alerts** | Slack, Teams, email | Slack, Teams, email | Slack, Teams, email | Slack, Teams, email |
+| **Alerts** | Slack, Teams | Slack, Teams | Slack, Teams | Slack, Teams |
+
+A web app gets other services. See [Types of apps](docs/types-of-apps.md).
 
 ### Practices
 
-1. **One folder per job** - Each job is built, deployed, and destroyed on its own.
-2. **Run it locally first** - `pdt run` runs the job the same way the cloud does, with the same config and storage.
-3. **You own everything** - Your jobs live in your own git repo, and they run in your own cloud account. There is no pdt server.
+1. **One folder per app** - Each app is built, deployed, and destroyed on its own.
+2. **Run it locally first** - `pdt run` runs the app on your computer with the same config the cloud uses. A local run keeps its files in `.pdt/storage/` in the project, not in the cloud, and a local web app has no sign-in.
+3. **You own everything** - Your apps live in your own git repo, and they run in your own cloud account. There is no pdt server.
 4. **Secrets stay secret** - Kept in `.env` on your computer and in the cloud's secret store, never in git or the image.
-5. **Nothing left behind** - Everything pdt makes is tagged `managed-by=pdt`, and `pdt destroy` removes all of it.
+5. **Nothing left behind** - Everything pdt makes is tagged `managed-by=pdt`, and `pdt destroy` removes all of it except the app's storage folder, which only `pdt storage APP destroy` deletes.
 6. **Cheapest by default** - Jobs run only when scheduled, on the lowest-cost option that works (for example arm64 on AWS).
 7. **One run at a time** - A job's saved state is locked during a run, so two runs never overwrite each other.
 
@@ -93,10 +95,10 @@ See [the same output as text](docs/example-deploy.md).
 Run `pdt examples` to list them, then `pdt new <name> --from <example>` to copy one.
 
 ### hello-world
-Small job that logs "Hello world." `pdt init` puts a copy of this in every new empty project.
+Small job that logs "Hello, world!". `pdt init` puts a copy of this in every new empty project.
 
 ### azure-license-waste
-PowerShell job. Finds the Microsoft 365 licenses a tenant pays for that nobody uses: paid licenses on disabled accounts, on accounts that have not signed in for 90 days (or never did), and seats bought but assigned to nobody. Each run keeps a `LicenseWaste-<date>.xlsx` workbook in the job's data store, with a Summary sheet of monthly and annual cost and one sheet per finding.
+PowerShell job. Finds the Microsoft 365 licenses a tenant pays for that nobody uses: paid licenses on disabled accounts, on accounts that have not signed in for 90 days (or never did), and seats bought but assigned to nobody. Each run keeps a `LicenseWaste-<date>.xlsx` workbook in the job's storage folder, with a Summary sheet of monthly and annual cost and one sheet per finding.
 
 ### impossible-travel-report
 Looks at recent Entra ID sign-ins. Sends an email when one person signs in from two far-apart places too quickly: Dallas an hour ago, Paris now.
@@ -105,7 +107,7 @@ Settings for the lookback window, the minimum distance, and the email addresses 
 
 ### intune-export
 
-PowerShell job. Once a week it exports the Intune configuration of a tenant with the bulk export of [IntuneManagement](https://github.com/Micke-K/IntuneManagement) version 4, and keeps an `IntuneExport-<date>.zip` in the job's data store. To import, unzip it and point IntuneManagement's import at the company folder inside. 
+PowerShell job. Once a week it exports the Intune configuration of a tenant with the bulk export of [IntuneManagement](https://github.com/Micke-K/IntuneManagement) version 4, and keeps an `IntuneExport-<date>.zip` in the job's storage folder. To import, unzip it and point IntuneManagement's import at the company folder inside. 
 
 ### monday-orphaned-account-report
 Reports active Monday users whose email address does not match the `userPrincipalName` of an active Entra ID user.
@@ -114,10 +116,10 @@ Reports active Monday users whose email address does not match the `userPrincipa
 A PowerShell job whose one script, `hello.ps1`, writes "Hello, world!". It is the job the [Quick Start](#quick-start) deploys. Put your own `.ps1` files in its folder in place of `hello.ps1` to deploy your own PowerShell job.
 
 ### powershell-report
-PowerShell job. small CSV report with `Export-Csv`, and pdt keeps the file in the app's data store.
+PowerShell job. It writes a small CSV report with `Export-Csv`, and pdt keeps the file in the job's storage folder.
 
 ### web-hello
-A web app (`app_profile: web`) that greets the person who signed in.
+A web app (`app_profile: web`) that greets the person who signed in. It deploys to Google Cloud.
 
 ## Support
 
@@ -129,13 +131,13 @@ A web app (`app_profile: web`) that greets the person who signed in.
 ## Documentation
 
 - [Projects and apps](docs/projects.md): set up a project, add an app, and where pdt keeps its files
-- [Deploying](docs/deploy.md): deploy, run, pause, and destroy a job, and run pdt from CI
+- [Deploying](docs/deploy.md): deploy, run, pause, and destroy an app, and run pdt from CI
 - [Commands](docs/commands.md): every `pdt` command and its options
 - [Settings](docs/settings.md): every setting in the project's and the apps' `pdt.yml` files, and every env var, with its allowed values and its default
-- [Choosing where jobs run](docs/platforms.md): AWS, Azure, Google Cloud, Windows Task Scheduler, and your own Dockerfile
+- [Choosing where apps run](docs/platforms.md): AWS, Azure, Google Cloud, Windows Task Scheduler, and your own Dockerfile
 - [Keeping files between runs](docs/storage.md): the storage folder every app gets, and state that carries from one run to the next
-- [The dashboard](docs/dashboard.md): `pdt gui`, the browser view of every app's runs, logs, and files
-- [Writing your own app](docs/writing-apps.md): Python and PowerShell apps, and logging
+- [The dashboard](docs/dashboard.md): `pdt gui`, the browser view of every app's health, each job's runs, and their logs and files
+- [Writing your own app](docs/writing-apps.md): Python and PowerShell apps, web apps, and logging
 - [Sending email](docs/email.md): send mail from an app over SMTP, Microsoft Graph, SES, or Resend
 - [More ways to install](docs/install.md): other installs, and how to update or remove pdt
 - [Concepts](docs/concepts.md): projects, apps, and app profiles

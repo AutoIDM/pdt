@@ -5,7 +5,7 @@
 # env: in pdt.yml.
 #
 # PDT_OUTPUT_DIR is an empty folder pdt makes for each run. After the run,
-# pdt copies every file left in it to the app's data store, under
+# pdt copies every file left in it to the app's storage folder, under
 # runs/<run>/output/.
 
 $greeting = $env:REPORT_GREETING

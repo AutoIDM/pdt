@@ -1,4 +1,4 @@
-# Choosing where jobs run
+# Choosing where apps run
 
 Set `platform:` in the project's `pdt.yml` for every app, or in an app's own `pdt.yml` for one app. An app's own file wins. `timezone` may live under `platform:` as the default for every app, and an app's own `timezone` overrides it.
 
@@ -29,7 +29,7 @@ platform:
   # environment: my-group/my-environment
 ```
 
-`subscription` is optional. When it is missing or wrong, the deploy asks you to choose one.
+`subscription` is optional. When it is missing, the deploy uses the Azure CLI's active subscription and asks nothing. A deploy at a terminal writes it here; a deploy with no one to ask uses it and writes nothing. When the subscription here is not one that your Azure login can use, the deploy lists your subscriptions and asks you to choose one; with no one to ask, it stops. When the Azure CLI uses another subscription, the deploy switches the Azure CLI to this one.
 
 Every pdt project in a subscription runs its jobs in one shared Container Apps environment per region, `pdt-<region>` in the resource group `pdt-shared`, because a subscription allows only a few environments. Destroying the last app that uses the environment removes it, and removes `pdt-shared` once it holds no environment. Set `environment` to use an environment you already have; pdt then never creates, changes, or deletes it.
 
@@ -45,7 +45,7 @@ platform:
   profile: work
 ```
 
-`profile` is optional. When it is missing, pdt uses `AWS_PROFILE`, or the only profile on your computer. When there are several and none is chosen, or the one in the file is not on this computer, the deploy lists them and asks you to choose, then writes your answer here.
+`profile` is optional. When it is missing, pdt uses the default sign-in of the AWS SDK: `AWS_PROFILE`, the `default` profile, or `AWS_ACCESS_KEY_ID`. When that sign-in has no credentials, or the profile here is not on this computer, pdt uses the only profile on your computer. With several profiles, the deploy lists them, asks you to choose, and writes your answer here. With no profile, the deploy asks how you sign in to AWS, creates a profile, and writes its name here. With no one to ask, it stops.
 
 ## Google Cloud
 
@@ -56,31 +56,39 @@ platform:
   project: my-starter-project
 ```
 
-`project` is optional. When it is missing or wrong, the deploy lists your projects and asks you to choose one, then writes your answer here.
+`project` is optional. When it and `PDT_GOOGLE_CLOUD_PROJECT` are missing, the deploy lists your projects and asks you to choose one, or to type a new project id to create it, then writes your answer here. With no one to ask, it stops.
 
 ## Bringing your own Dockerfile
 
-Every cloud provider runs a job as a container (see [Primitives](../README.md#primitives)). The deploy builds an image for each app from a generated Dockerfile. It installs the script-header dependencies of `run.py` with `uv sync --script`, then copies the app folder and `pdt.yml` into `/workspace`, and runs `run.py` as the entrypoint. The install uses only the script header, so a deploy after a code or config change reuses the installed dependencies.
+Every cloud provider runs an app as a container (see [Primitives](../README.md#primitives)). The deploy builds an image for each app from a generated Dockerfile, and the app runs as the user `pdt`, not as root.
 
-Put a `Dockerfile` in the app folder to build the image your own way, for example to add system packages or to install a heavy tool at build time instead of on every run. The build context is the same as the generated one: the app folder under its own name, next to `pdt.yml`. Start from the generated file:
+- For a Python app, the Dockerfile installs the script-header dependencies of `run.py` with `uv sync --script`, then copies the app folder and `pdt.yml` into `/workspace`, and runs `run.py`. The install uses only the script header, so a deploy after a code or config change reuses the installed dependencies.
+- For a PowerShell app, the Dockerfile installs `pdt-cli[apps]` at the version of the pdt that deploys, then PowerShell, then the modules that the scripts need. The build loads each module once, so a broken module fails the build. The image runs the scripts with pdt's built-in runner, `pdt.run_powershell`, or with the app's own `run.py` when `pdt new APP --from-scripts` wrote one.
+
+Put a `Dockerfile` in the app folder to build the image your own way, for example to add system packages or to install a heavy tool at build time instead of on every run. The build context is the same as the generated one: the app folder under its own name, next to `pdt.yml`, and the `.pdt-lifecycle` folder. For a Python app, start from this file, which is the generated file with the install after the copy:
 
 ```dockerfile
 FROM ghcr.io/astral-sh/uv:python3.13-trixie-slim@sha256:e586c1c65b7071aec78f02c5587c76c5011159cd76b3d6f1255f40e48e850abc
 RUN pip uninstall -y --root-user-action=ignore pip
-COPY . /workspace
+RUN useradd --uid 10001 --user-group --create-home pdt \
+    && mkdir -p /workspace/my-app && chown -R pdt:pdt /workspace
+USER pdt
+COPY --chown=pdt:pdt .pdt-lifecycle /opt/pdt-lifecycle
+RUN uv sync --script /opt/pdt-lifecycle/pdt/lifecycle.py
 WORKDIR /workspace/my-app
-ENV PDT_PROJECT=/workspace NO_COLOR=1 DBT_USE_COLORS=false
+ENV PDT_PROJECT=/workspace NO_COLOR=1 DBT_USE_COLORS=false PYTHONUNBUFFERED=1
+COPY --chown=pdt:pdt . /workspace
 RUN uv sync --script run.py && rm -rf "$(uv python dir)"/*/lib/python*/site-packages/pip*
-ENTRYPOINT ["sh", "-c", "uv run --script run.py; code=$?; echo \"pdt: exit $code\"; exit $code"]
+ENTRYPOINT ["sh", "-c", "stop() { kill -s $1 $pid; wait $pid; finish $?; }; finish() { echo \"pdt: exit $1\"; exit $1; }; trap \"stop TERM\" TERM; trap \"stop INT\" INT; uv run --script /opt/pdt-lifecycle/pdt/lifecycle.py -- uv run --script run.py & pid=$!; wait $pid; finish $?"]
 ```
 
 A `.dockerignore` in the app folder keeps files out of the image. Write its patterns relative to the app folder (`.meltano`, `output`, `*.csv`); pdt moves them to the root of the build context for you. `.env` and the other secret files never reach the context, with or without a `.dockerignore`.
 
-The `ENTRYPOINT` ends each run's output with the line `pdt: exit N`, which `pdt runs` reads for the run's exit code. Keep that line when you change the rest of the file.
+The `ENTRYPOINT` starts `run.py` through `lifecycle.py`, which sends the run's alert events, and it ends each run's output with the line `pdt: exit N`, which `pdt runs` reads for the run's exit code. Keep that line when you change the rest of the file.
 
 A `RUN --mount=type=ssh` step in your own `Dockerfile` can install a private git dependency with your computer's SSH agent. Only a build with Docker on your computer has the agent, so a deploy that would build such an app in the cloud stops and names the step.
 
-The Windows provider never builds an image, so `pdt validate` reports a Dockerfile in an app that uses it.
+The Windows provider never builds an image, so its deploy plan says that it ignores a `Dockerfile` in the app folder.
 
 ## Windows Task Scheduler
 

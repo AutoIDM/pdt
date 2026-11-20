@@ -7,7 +7,7 @@
 # Or a 5-field cron expression, for example "0 * * * *".
 schedule: "daily"
 
-# Every app gets a data store folder by default. Uncomment to opt out.
+# Every app gets a storage folder by default. Uncomment to opt out.
 # storage: false
 
 config:

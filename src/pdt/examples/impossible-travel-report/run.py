@@ -21,8 +21,8 @@ Env (creds only — put these in .env at this folder or any parent):
     PDT_AZURE_PRIVATE_KEY_B64   (base64 of the PFX; what deploy sets in the cloud)
     PDT_AZURE_PRIVATE_KEY_PATH  (+ optional PDT_AZURE_PRIVATE_KEY_PASSWORD)
   Cert auth wins over the client secret, and B64 wins over PATH.
-  A relative PATH is relative to the repo root.
-  Email: see pdt.utils.send_email (exactly one of smtp / ses / resend).
+  A relative PATH starts at the project folder.
+  Email: see pdt.utils.send_email (exactly one of smtp / graph / ses / resend).
   If no email transport is set, findings print to stdout.
 
 Exit codes: 0 ok, 1 bad config, 2 Entra/Graph failure, 3 email failure.

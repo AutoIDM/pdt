@@ -2,7 +2,7 @@
 
 ## Set up a project
 
-A project is a folder holding `pdt.yml`. Each app is a folder inside it that contains a `run.py`, or the `.ps1` scripts of a PowerShell app, and its own `pdt.yml`. Every command except `init` finds the project by looking in the current folder, then each folder above it; a folder that also holds `run.py` or `.ps1` scripts is an app, so the walk goes past it.
+A project is a folder holding `pdt.yml`. Each app is a folder inside it that contains a `run.py`, the `.ps1` scripts of a PowerShell app, or the `Dockerfile` of a web app. An app's own `pdt.yml` is optional, except in a folder that holds a `Dockerfile` and no `run.py` or `.ps1` scripts. Every command that needs a project finds it by looking in the current folder, then each folder above it; a folder that also holds `run.py` or `.ps1` scripts is an app, so the walk goes past it.
 
 `config.yml` is the deprecated name of an app's `pdt.yml`. pdt still reads an app's `config.yml` when its folder has no `pdt.yml`. Rename the file to `pdt.yml`.
 
@@ -10,7 +10,7 @@ A project is a folder holding `pdt.yml`. Each app is a folder inside it that con
 pdt init my-jobs
 ```
 
-`pdt init` asks where the project should live, which cloud you want, and which region. It warns you if you are about to create a project somewhere unwise, such as your home folder. The folder name is optional: `pdt init` with no name uses the current folder, and `pdt init DIR` uses `DIR`, creating it if it is not there yet. Add `--yes` to take the defaults and answer nothing.
+`pdt init` asks where the project should live, which cloud you want, and which region. For AWS and Google Cloud, it also asks which time zone the schedules use. It warns you if you are about to create a project somewhere unwise, such as your home folder. The folder name is optional: `pdt init` with no name uses the current folder, and `pdt init DIR` uses `DIR`, creating it if it is not there yet. Add `--yes` to take the defaults and answer nothing.
 
 Region is the only place setting it asks for. Your AWS account, Azure subscription, and Google Cloud project all come from your credentials the first time you deploy, and pdt writes the answer into `pdt.yml` so every later deploy checks against it.
 
@@ -67,4 +67,4 @@ my-jobs/
 | a Windows scheduled task's run logs and files | `%ProgramData%\pdt\<app>\logs` and `%ProgramData%\pdt\<app>\storage` |
 | cloud sign-in state | `~/.aws`, `~/.azure`, and `~/.config/gcloud`, as usual |
 
-Set `PDT_PROJECT` to name the project folder directly, instead of letting pdt search upward. Deployed jobs get it set for them.
+Set `PDT_PROJECT` to name the project folder directly, instead of letting pdt search upward. An image that pdt generates sets it to `/workspace`. An app's own `Dockerfile` must set it too, as the sample in [Bringing your own Dockerfile](platforms.md#bringing-your-own-dockerfile) does.
