@@ -46,7 +46,7 @@ Each cloud job builds container images with Docker on the GitHub Actions runner 
 | `GOOGLE_CLOUD_PROJECT` | variable | google-cloud | Google Cloud project ID |
 | `GOOGLE_APPLICATION_CREDENTIALS` | secret | google-cloud | Service account key, the JSON file's content |
 
-A push to `main` and a daily schedule start the workflow. A pull request does not. To verify a pull request, start the workflow by hand (Actions > verify > Run workflow) and choose the pull request's branch; every job checks out and tests that branch.
+A push to `main` and a daily schedule start the workflow. A pull request does not. A manual run (Actions > verify > Run workflow) works on `main` only: the `verify` environment, which holds the cloud secrets, allows only `main`, so GitHub refuses the cloud jobs on any other branch. This keeps the cloud secrets away from code that has not merged.
 
 The AWS job stores no key. It trades the job's GitHub OIDC token for credentials that expire after one hour. The role's trust policy must allow `sts:AssumeRoleWithWebIdentity` from the `token.actions.githubusercontent.com` identity provider when `token.actions.githubusercontent.com:aud` is `sts.amazonaws.com` and `token.actions.githubusercontent.com:sub` is `repo:AutoIDM/pdt:environment:verify`. `verify/scripts/aws_role.py` writes its permission policy: every action pdt deploy and destroy need, plus every read action the inventory calls. Run it again after a change to either, with a profile that may change IAM roles in the verify account:
 
