@@ -4,9 +4,9 @@
 # newer run.
 #
 # A push to main and the daily schedule start a run. A pull request does
-# not. To verify a pull request, start this workflow by hand on the pull
-# request's branch; every job then checks out and tests that branch. A cloud
-# job runs in the `verify` environment, which holds its secrets.
+# not. A cloud job runs in the `verify` environment, which holds its secrets
+# and allows only main, so GitHub refuses a cloud job on any other branch.
+# Verify a pull request after it merges.
 
 name: verify
 
