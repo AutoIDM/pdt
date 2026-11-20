@@ -191,9 +191,11 @@ def aws_schedules(region: str) -> Inventory:
         if group["Name"] != "pdt":
             continue
         try:
-            tagged, schedules = parallel(lambda args: aws(region, "scheduler", *args) or {}, [
-                ("list-tags-for-resource", "--resource-arn", group["Arn"]),
-                ("list-schedules", "--group-name", group["Name"])])
+            tagged, schedules = parallel(lambda read: read() or {}, [
+                lambda: aws(region, "scheduler", "list-tags-for-resource",
+                            "--resource-arn", group["Arn"]),
+                lambda: aws(region, "scheduler", "list-schedules",
+                            "--group-name", group["Name"])])
         except InventoryError as error:
             if "(ResourceNotFoundException)" not in str(error):
                 raise

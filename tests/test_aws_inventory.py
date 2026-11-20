@@ -71,7 +71,8 @@ def test_the_verify_role_policy_allows_every_inventory_call():
 
     allowed = {action for statement in aws_role.policy("123456789012")["Statement"]
                for action in statement["Action"]}
-    assert {"batch:DescribeComputeEnvironments", "tag:GetResources"} <= allowed
+    assert {"batch:DescribeComputeEnvironments", "tag:GetResources",
+            "scheduler:ListTagsForResource"} <= allowed
 
 
 def test_the_listers_and_the_tag_calls_of_one_inventory_run_at_the_same_time(monkeypatch):
