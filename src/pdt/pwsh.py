@@ -28,14 +28,14 @@ from pdt import console
 from pdt.config import data_home, locked, machine_data_home, unsaved
 from pdt.download import fetch_verified
 
-VERSION = "7.6.8"
+VERSION = "7.6.10"
 CHECKSUMS = {
-    "linux-x64": "59112e38ad83350e4f6dc0195953c66b5926792f300ca2e7691b8242e7a16e7f",
-    "linux-arm64": "3179e07fd98f026d39c730ebcb7626d071aac3351b171dda13f9f38d99efcef0",
-    "osx-x64": "40a4eea4645c87149421cdef978efdcb88e561c96b22d3bfafe9a99ab7f8711d",
-    "osx-arm64": "c16a3f433966c6fd5a9c8a660a95c92cb5dbc4b1813416501d1ba30ca160da32",
-    "win-x64": "b9f074f923c499b51ec99d313da8e9ae90d17a9f3adf00c73d6189f34d908528",
-    "win-arm64": "e889c9bfa6c3a9796bd6268cbeeb389e3968f77c6db46cb282178274d71c160b",
+    "linux-x64": "e261cabc91c78a9afe8d1e5f24731ab0d38204735ab2ec94b0af55102652e10d",
+    "linux-arm64": "439432cdecf4418413b9a8f547e3ab4d9b40e8e4258913ec3d15fc92c67a9235",
+    "osx-x64": "aa55bef6375e7b1a61e860866a38af5f2366ceb4189293e6b73b7777cb1d7793",
+    "osx-arm64": "fb6f1978c7d3266d4ced9391de6519d971ef92bd036e5b8be62f1ccdfbda9477",
+    "win-x64": "7d871531806eb1646264e4bbabd9f0c30c23355591bc756bb9909448c29ae166",
+    "win-arm64": "1d36ecac1d8f5ac9577cfdfc426af41f3e90cbca6c52445e7db167f532b3a7ab",
 }
 INSTALL_DOCS = "https://learn.microsoft.com/powershell/scripting/install/installing-powershell"
 
