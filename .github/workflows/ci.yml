@@ -129,6 +129,21 @@ jobs:
           cache-dependency-glob: uv.lock
       - run: uv run --group dev ruff check
 
+  # Fails on an Error finding or a security rule finding; other findings only print.
+  powershell-lint:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - shell: pwsh
+        run: |
+          Install-PSResource PSScriptAnalyzer -Version 1.25.0 -Repository PSGallery -TrustRepository
+          $security = 'PSAvoidUsingInvokeExpression', 'PSAvoidUsingPlainTextForPassword', 'PSAvoidUsingConvertToSecureStringWithPlainText', 'PSAvoidUsingUsernameAndPasswordParams', 'PSAvoidUsingBrokenHashAlgorithms', 'PSAvoidUsingAllowUnencryptedAuthentication'
+          $findings = git ls-files '*.ps1' | ForEach-Object { Invoke-ScriptAnalyzer -Path $_ }
+          $findings | Format-Table -AutoSize ScriptName, Line, Severity, RuleName, Message | Out-String -Width 400
+          $failed = @($findings | Where-Object { $_.Severity -eq 'Error' -or $_.RuleName -in $security })
+          if ($failed) { throw "$($failed.Count) PowerShell finding(s) of Error severity or a security rule." }
+
   # Everything the verify matrix can prove without a cloud account.
   verify-check:
     if: github.event_name != 'schedule'
