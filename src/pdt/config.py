@@ -81,6 +81,15 @@ PLACE_KEYS = {"aws": ("region", "account"), "google-cloud": ("region", "project"
 # The place keys a deploy finds and saves when the config leaves them empty. Every other
 # place key that the config leaves empty takes the provider's default place.
 FOUND_KEYS = ("account", "project", "subscription")
+# The place key that names each provider's storage: one bucket or storage account for
+# every region of an AWS account, Azure subscription, or Google Cloud project, and one
+# folder on a Windows computer.
+STORE_KEYS = {"aws": "account", "azure": "subscription", "google-cloud": "project",
+              "windows": ""}
+# An Azure subscription may also be named by its display name; only its id compares. A deploy
+# keeps the id it found for a display name in the app's record, under STORE_ID_KEY.
+SUBSCRIPTION_ID = re.compile(r"[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
+STORE_ID_KEY = "store_id"
 DEPLOYED_PLATFORM_ENV = "PDT_DEPLOYED_PLATFORM"
 # Where each known key belongs, so a key in the wrong section gets told
 # where to move instead of "unknown key".
@@ -389,6 +398,7 @@ def merged_app(name: str) -> dict:
         "env": mapping(own, "env", own_where) or mapping(entry, "env", entry_where),
         "storage": storage,
         "storage_read": storage_read,
+        "storage_from": own_where if "storage" in own else entry_where,
         "web": mapping(own, "web", own_where) or mapping(entry, "web", entry_where),
         "auth": (auth_section(mapping(own, "web", own_where), own_where)
                  or auth_section(mapping(entry, "web", entry_where), entry_where)),
@@ -665,6 +675,32 @@ def deployed_platform(name: str) -> dict | None:
 def place(platform: dict) -> dict[str, str]:
     keys = ("provider", *PLACE_KEYS.get(platform.get("provider"), ()))
     return {key: str(platform[key]) for key in keys if str(platform.get(key) or "") != ""}
+
+
+def store_place(platform: dict, recorded: dict | None) -> str:
+    """The STORE_KEYS value of `platform`, else of `recorded`, or "" when neither names it. An
+    Azure subscription counts only as an id: the value itself, or the STORE_ID_KEY that
+    `recorded` keeps for the same display name."""
+    key = STORE_KEYS.get(platform.get("provider"), "")
+    recorded = recorded or {}
+    found = recorded.get(STORE_ID_KEY) if recorded.get(key) == platform.get(key) else ""
+    for value in (platform.get(key), recorded.get(key), found):
+        value = str(value or "")
+        if value and (key != "subscription" or SUBSCRIPTION_ID.fullmatch(value)):
+            return value
+    return ""
+
+
+def record_value(name: str, key: str, value: str) -> None:
+    """Set one key of the app's record in .pdt/state, when it has one; a plan changes nothing."""
+    if unsaved() is not None:
+        return
+    with state_locked():
+        state = read_state()
+        record = (state.get("platforms") or {}).get(name)
+        if isinstance(record, dict):
+            record[key] = value
+            write_state(state)
 
 
 def deployed_places() -> dict[str, dict[str, str]]:
@@ -983,6 +1019,27 @@ def load_env(start: Path) -> list[Path]:
     return files
 
 
+def app_environment(start: Path, base) -> dict[str, str]:
+    """The environment that load_env(start) gives a process whose environment is `base`. As
+    load_dotenv does, ${NAME} in a value takes NAME from the environment so far, else from the
+    lines above it in the same file, and a true PYTHON_DOTENV_DISABLED reads no further file."""
+    from dotenv.main import DotEnv
+    from dotenv.variables import parse_variables
+
+    env = dict(base)
+    for path in find_env_files(start):
+        if env.get("PYTHON_DOTENV_DISABLED", "").casefold() in {"1", "true", "t", "yes", "y"}:
+            break
+        values = {}
+        for name, value in DotEnv(path, encoding="utf-8-sig", interpolate=False).parse():
+            values[name] = None if value is None else "".join(
+                atom.resolve({**values, **env}) for atom in parse_variables(value))
+        for name, value in values.items():
+            if value is not None:
+                env.setdefault(name, value)
+    return env
+
+
 def load_env_json() -> None:
     # In the cloud, deploy mounts all app secrets as one json blob. Azure
     # serves the copy it cached at deploy time, so read the secret itself.
@@ -1233,7 +1290,7 @@ def dockerfile_problem(platform: dict) -> str:
     return f"not used by the {platform.get('provider')} provider"
 
 
-def validate_app(name: str) -> list[str]:
+def validate_app(name: str, planned: dict | None = None) -> list[str]:
     own_file = app_file(find_project() / name)
     where = f"{name}/{own_file.name}"
     try:
@@ -1285,7 +1342,7 @@ def validate_app(name: str) -> list[str]:
     else:
         problems.append(f"{name}: app_profile must be one of: job, web")
     problems.extend(f"{where}: {problem}" for problem in
-                    storage_problems(app, own.get("storage", entry.get("storage", True))))
+                    storage_problems(app, own.get("storage", entry.get("storage", True)), planned))
     if not isinstance(app["enabled"], bool):
         problems.append(f"{where}: enabled must be true or false")
     if not isinstance(app["continue_on_error"], bool):
@@ -1309,8 +1366,9 @@ def storage_read(app: dict) -> list[str]:
     return app["storage_read"]
 
 
-def storage_problems(app: dict, storage) -> list[str]:
-    """The problems of the app's raw `storage:` value: `true`, `false`, or a mapping."""
+def storage_problems(app: dict, storage, planned: dict | None = None) -> list[str]:
+    """The problems of the app's raw `storage:` value: `true`, `false`, or a mapping. `planned`
+    holds the platform of each app of the `pdt deploy --all` run this check is part of."""
     if isinstance(storage, bool):
         return []
     if not isinstance(storage, dict):
@@ -1348,7 +1406,8 @@ def storage_problems(app: dict, storage) -> list[str]:
             if other["storage"] is False:
                 problems.append(f"storage.read names {name!r}, which has storage: false, "
                                 "so it has no folder to read")
-            other_provider = other["platform"].get("provider")
+            other_provider = ((planned or {}).get(name) or deployed_platform(name)
+                              or other["platform"]).get("provider")
             if provider in PROVIDERS and other_provider in PROVIDERS and other_provider != provider:
                 problems.append(f"storage.read names {name!r}, which uses the {other_provider} "
                                 f"provider, so its folder is not in the {STORE_NAMES[provider]} store")

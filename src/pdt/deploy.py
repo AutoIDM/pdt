@@ -148,7 +148,7 @@ def dispatch_output(provider: str, command: str, app_name: str,
 
 
 def deploy(app_name: str, assume_yes: bool = False, run: bool | None = None,
-           rebuild: bool = False, plan_only: bool = False) -> int:
+           rebuild: bool = False, plan_only: bool = False, planned: dict | None = None) -> int:
     """Deploy one app; then offer to start a run of it.
 
     `run` None asks a person at a terminal and starts nothing with `--yes` or
@@ -157,21 +157,27 @@ def deploy(app_name: str, assume_yes: bool = False, run: bool | None = None,
     or the run's when pdt followed one.
 
     `plan_only` prints the plan and the cost estimate, asks no question, and saves no
-    config file (`config.plan_only`)."""
+    config file (`config.plan_only`). `planned` holds `planned_places` of the run this
+    deploy is part of (`pdt deploy --all`)."""
     if not plan_only:
-        return _deploy(app_name, assume_yes, run, rebuild, False)
+        return _deploy(app_name, assume_yes, run, rebuild, False, planned or {})
     with config.plan_only():
-        return _deploy(app_name, True, False, False, True)
+        return _deploy(app_name, True, False, False, True, planned or {})
 
 
 def _deploy(app_name: str, assume_yes: bool, run: bool | None, rebuild: bool,
-            plan_only: bool) -> int:
+            plan_only: bool, planned: dict) -> int:
     try:
         app, provider = _load(app_name)
     except ConfigError as e:
         console.error(console.escape(str(e)))
         return 1
-    problems = config.validate_app(app_name)
+    base = dict(os.environ)
+    refusal = read_place_problem(app, base, {**planned, app_name: destination(app_name, base)})
+    if refusal != "":
+        console.error(refusal)
+        return 1
+    problems = config.validate_app(app_name, planned)
     sources = config.env_file_lines(app["dir"])
     config.load_env(app["dir"])
     missing = config.missing_env(app)
@@ -311,10 +317,10 @@ PLACE_ENV = {
 PLACE_DEFAULTS = {"azure": {"resource_group": "pdt"}}
 
 
-def resolved(platform: dict) -> dict:
+def resolved(platform: dict, environ=os.environ) -> dict:
     provider = platform.get("provider")
     names = {**PLACE_ENV.get(provider, {}), "region": regions.REGION_ENV.get(provider, ())}
-    found = {key: next((os.environ[name] for name in env if os.environ.get(name)),
+    found = {key: next((environ[name] for name in env if environ.get(name)),
                        PLACE_DEFAULTS.get(provider, {}).get(key, ""))
              for key, env in names.items() if not platform.get(key)}
     return {**platform, **{key: value for key, value in found.items() if value}}
@@ -324,6 +330,75 @@ def moved(recorded: dict, platform: dict) -> bool:
     old, new = config.place(recorded), config.place(resolved(platform))
     return any(old.get(key) != value for key, value in new.items()) or any(
         key not in new for key in old if key not in config.FOUND_KEYS)
+
+
+def destination(app_name: str, base) -> dict:
+    """The platform the app deploys to: its config and the environment that its own .env files
+    give on top of `base`, keeping each found key of its record that they leave empty."""
+    app = config.merged_app(app_name)
+    platform = resolved(app["platform"], config.app_environment(app["dir"], base))
+    before = config.deployed_platform(app_name)
+    return {**platform, **{key: before[key] for key in config.FOUND_KEYS
+                           if before and before.get(key) and not platform.get(key)}}
+
+
+def read_place_problem(app: dict, base, planned: dict[str, dict]) -> str:
+    """Markup naming the first storage.read app whose folder is not in this app's storage
+    (the same provider and `config.STORE_KEYS` place). `planned` holds the platform of each app
+    this run deploys, this app among them; any other app is where `.pdt/state` records it, else
+    where its config and its own environment (`destination`) deploy it. "" when every folder is
+    in this app's storage. A provider, a value, or a name that is not valid is left to
+    validation."""
+    name = app["name"]
+    own = planned[name]
+    provider = own.get("provider")
+    if provider not in config.STORE_KEYS:
+        return ""
+    key = config.STORE_KEYS[provider]
+    value = config.store_place(own, config.deployed_platform(name))
+    names = app["storage_read"] if isinstance(app["storage_read"], list) else []
+    for other in [other for other in names if isinstance(other, str)]:
+        recorded = None if other in planned else config.deployed_platform(other)
+        try:
+            platform = planned.get(other) or recorded or destination(other, base)
+        except ConfigError:
+            continue
+        place = config.place(platform)
+        if place.get("provider") not in config.STORE_KEYS:
+            continue
+        other_value = config.store_place(platform, config.deployed_platform(other))
+        if place.get("provider") == provider and (not value or not other_value
+                                                  or other_value.lower() == value.lower()):
+            continue
+        where = "is deployed to" if recorded else "deploys to"
+        store = " ".join(part for part in (config.STORE_NAMES[provider], key, value)
+                         if part)
+        return (f"storage.read in {console.value(app['storage_from'])} names "
+                f"{console.value(other)}, which {where} "
+                f"{console.value(describe_place(place))}. {console.value(name)} deploys to "
+                f"{console.value(store)} and reads only from the storage of that "
+                f"{key or 'computer'}. Deploy {console.value(other)} to {console.value(store)}, "
+                f"or remove it from storage.read.")
+    return ""
+
+
+def planned_places(names: list[str]) -> dict[str, dict]:
+    """The platform each app of one run that deploys `names` deploys to. An app whose config
+    does not load is left out; its own deploy reports why."""
+    planned = {}
+    for name in names:
+        try:
+            planned[name] = destination(name, os.environ)
+        except ConfigError:
+            continue
+    return planned
+
+
+def read_place_problems(planned: dict[str, dict]) -> list[str]:
+    """read_place_problem for each app of `planned_places`, before the first deploy of the run."""
+    problems = [read_place_problem(config.merged_app(name), os.environ, planned)
+                for name in planned]
+    return [problem for problem in problems if problem != ""]
 
 
 def say_places(app: dict, recorded: dict) -> None:
@@ -438,6 +513,10 @@ def record_place(app_name: str, before: dict | None) -> dict:
     platform = resolved(config.merged_app(app_name)["platform"])
     record = {**platform, **{key: before[key] for key in config.FOUND_KEYS
                              if before and before.get(key) and not platform.get(key)}}
+    current = config.deployed_platform(app_name) or {}
+    key = config.STORE_KEYS.get(record.get("provider"), "")
+    if key and current.get(config.STORE_ID_KEY) and current.get(key) == record.get(key):
+        record[config.STORE_ID_KEY] = current[config.STORE_ID_KEY]
     config.mark_deployed(app_name, record)
     return record
 

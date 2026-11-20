@@ -1069,7 +1069,11 @@ def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -
 def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     cloud = build_in_cloud(app, "ACR Tasks", "linux/amd64")
     console.status("Checking your Azure sign-in...")
-    settings = preflight(app, azure_settings(app))
+    settings = azure_settings(app)
+    requested = settings.get("subscription", "")
+    settings = preflight(app, settings)
+    if requested and not config.SUBSCRIPTION_ID.fullmatch(requested):
+        config.record_value(app["name"], config.STORE_ID_KEY, settings["subscription"])
     name = app["name"]
     job = job_name(settings, name)
     cron = config.cron_expression(app["schedule"])

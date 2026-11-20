@@ -436,7 +436,7 @@ def preflight(app: dict, settings: dict) -> dict:
                  f"`{console.value('pdt az account set --subscription ' + account['id'])}`, "
                  "then run the plan again")
         run_quiet("account", "set", "--subscription", account["id"])
-    elif not requested and can_ask:
+    elif not requested:
         save_subscription(app, account)
     problem = subscription_problem(account)
     if problem:

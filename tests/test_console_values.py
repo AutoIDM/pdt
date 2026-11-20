@@ -27,9 +27,9 @@ BUILDERS = {"project_line", "secret_contents", "store_description", "store_kept_
 # console.value(). Each set holds the interpolated expressions of one file.
 ALLOWED = {
     "alerts_cli.py": {"question", "len(options)", "names"},
-    "cli.py": {"APP_QUESTIONS[command]", "len(apps) - len(shown)", "len(problems)", "index",
+    "cli.py": {"refusal", "APP_QUESTIONS[command]", "len(apps) - len(shown)", "len(problems)", "index",
                "len(names)", "len(deployed)", "line", "choices", "gerund", "command", "past"},
-    "deploy.py": {"tool", "line", "state", "action"},
+    "deploy.py": {"tool", "line", "state", "action", "refusal"},
     "deploy_common.py": {"what", "where", "key", "message", "description", "count", "provider", "len(values)",
                          "problem", "suffix",
                          "details['tries']", "BACKOFF_MAX_TRIES", "details['wait']"},

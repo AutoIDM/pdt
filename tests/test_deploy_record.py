@@ -2,6 +2,9 @@ import json
 import os
 
 import pytest
+from rich.text import Text
+
+from conftest import add_app
 
 from pdt import alerts_cli, cli, config, console, deploy, deploy_aws, deploy_azure, scaffold
 
@@ -393,3 +396,243 @@ def test_in_a_menu_the_marker_starts_on_cancel(project, monkeypatch, press, pres
     deploy.deploy(APP, run=False)
     assert [command for _provider, command, _platform in cloud.calls] == commands
     assert cloud.asked == []
+
+
+SUB_1 = "11111111-1111-1111-1111-111111111111"
+SUB_2 = "22222222-2222-2222-2222-222222222222"
+AZURE_ID = AZURE.replace("sub-1", SUB_1)
+
+
+def reader(project, text, read_from=APP):
+    add_app(project, "reader", f"storage:\n  read: [{read_from}]\n")
+    (project / "pdt.yml").write_text(text)
+    return config.merged_app("reader")
+
+
+@pytest.mark.parametrize("text,elsewhere,store", [
+    (AWS, {"provider": "aws", "region": "us-east-1", "account": "210987654321"},
+     "AWS account 123456789012 and reads only from the storage of that account"),
+    (AZURE_ID, {"provider": "azure", "region": "eastus", "subscription": SUB_2},
+     f"Azure subscription {SUB_1} and reads only from the storage of that subscription"),
+    (GOOGLE, {"provider": "google-cloud", "region": "us-central1", "project": "other-project"},
+     "Google Cloud project my-project and reads only from the storage of that project"),
+    (WINDOWS, {"provider": "azure", "region": "eastus", "subscription": SUB_1},
+     "Windows and reads only from the storage of that computer"),
+])
+def test_a_read_app_deployed_to_another_store_is_refused(project, text, elsewhere, store):
+    app = reader(project, text)
+    config.mark_deployed(APP, elsewhere)
+    message = place_problem(app)
+    assert message.startswith(f"storage.read in reader/pdt.yml names {APP}, which is deployed to "
+                              f"{deploy.describe_place(config.place(elsewhere))}. ")
+    assert f"reader deploys to {store}." in message
+    assert message.endswith(", or remove it from storage.read.")
+
+
+def place_problem(app, base=None):
+    base = os.environ if base is None else base
+    planned = {app["name"]: deploy.destination(app["name"], base)}
+    return Text.from_markup(deploy.read_place_problem(app, base, planned)).plain
+
+
+@pytest.mark.parametrize("text,region", [(AWS, "eu-west-1"), (AZURE_ID, "westeurope"),
+                                         (GOOGLE, "europe-west1")])
+def test_a_read_app_in_another_region_of_the_same_store_is_read(project, text, region):
+    app = reader(project, text)
+    platform = config.merged_app(APP)["platform"]
+    config.mark_deployed(APP, {**platform, "region": region})
+    assert place_problem(app) == ""
+
+
+def test_a_read_app_whose_config_names_another_project_is_refused(project):
+    app = reader(project, GOOGLE)
+    (project / APP / "pdt.yml").write_text("platform:\n  project: other-project\n")
+    message = place_problem(app)
+    assert (f"names {APP}, which deploys to google-cloud, region us-central1, "
+            "project other-project.") in message
+    assert message.endswith(f"Deploy {APP} to Google Cloud project my-project, "
+                            "or remove it from storage.read.")
+
+
+def test_a_read_app_that_is_not_deployed_takes_the_place_its_own_env_gives(project):
+    app = reader(project, AZURE_ID.replace(f"  subscription: {SUB_1}\n", ""))
+    (project / "reader" / ".env").write_text(f"PDT_AZURE_SUBSCRIPTION={SUB_1}\n")
+    (project / APP / ".env").write_text(f"PDT_AZURE_SUBSCRIPTION={SUB_2}\n")
+    message = place_problem(app, base={})
+    assert f"names {APP}, which deploys to azure, region eastus, subscription {SUB_2}, " in message
+    assert f"reader deploys to Azure subscription {SUB_1}" in message
+    (project / APP / ".env").unlink()
+    assert place_problem(app, base={"PDT_AZURE_SUBSCRIPTION": SUB_1}) == ""
+
+
+def test_a_read_list_in_the_project_file_is_named_there(project):
+    add_app(project, "reader")
+    (project / "pdt.yml").write_text(
+        f"{AZURE_ID}apps:\n  - name: reader\n    storage:\n      read: [{APP}]\n")
+    config.mark_deployed(APP, {"provider": "azure", "region": "eastus", "subscription": SUB_2})
+    message = place_problem(config.merged_app("reader"))
+    assert message.startswith(f"storage.read in pdt.yml: apps entry 'reader' names {APP}, ")
+
+
+def test_validation_takes_the_provider_where_the_read_app_is_deployed(project):
+    reader(project, AZURE_ID)
+    (project / APP / "pdt.yml").write_text("platform:\n  provider: google-cloud\n")
+    config.mark_deployed(APP, {"provider": "azure", "region": "eastus", "subscription": SUB_1})
+    assert not any("provider" in problem for problem in config.validate_app("reader"))
+    assert place_problem(config.merged_app("reader")) == ""
+    config.mark_deployed(APP, None)
+    assert any(f"names '{APP}', which uses the google-cloud provider" in problem
+               for problem in config.validate_app("reader"))
+
+
+def test_deploy_all_checks_every_app_where_this_run_deploys_it(project, monkeypatch, capsys):
+    reader(project, AZURE_ID)
+    config.mark_deployed(APP, {"provider": "azure", "region": "eastus", "subscription": SUB_1})
+    (project / APP / "pdt.yml").write_text(f"platform:\n  subscription: {SUB_2}\n")
+    cloud = Cloud(monkeypatch)
+    assert deploy.deploy("reader", assume_yes=True, run=False) == 0
+    cloud.calls.clear()
+    assert cli.deploy_all(assume_yes=True, skip_failures=False) == 1
+    assert cloud.calls == []
+    out = " ".join(capsys.readouterr().out.split())
+    assert f"names {APP}, which deploys to azure, region eastus, subscription {SUB_2}, " in out
+
+
+@pytest.mark.parametrize("plan_only", [False, True])
+def test_the_refusal_stops_the_deploy_before_the_provider_runs(project, monkeypatch, capsys,
+                                                                plan_only):
+    reader(project, AZURE_ID)
+    config.mark_deployed(APP, {"provider": "azure", "region": "eastus", "subscription": SUB_2})
+    cloud = Cloud(monkeypatch)
+    assert deploy.deploy("reader", run=False, plan_only=plan_only) == 1
+    assert cloud.calls == []
+    assert not config.is_deployed("reader")
+    out = " ".join(capsys.readouterr().out.split())
+    assert f"Deploy {APP} to Azure subscription {SUB_1}, or remove it from storage.read." in out
+
+
+def test_the_refusal_comes_before_the_env_check_and_the_powershell_scan(project, monkeypatch):
+    reader(project, AZURE_ID)
+    config.mark_deployed(APP, {"provider": "azure", "region": "eastus", "subscription": SUB_2})
+    monkeypatch.setattr(config, "missing_env", lambda app: pytest.fail("env checked"))
+    monkeypatch.setattr(config, "powershell_scripts", lambda folder: pytest.fail("scanned"))
+    Cloud(monkeypatch)
+    assert deploy.deploy("reader", run=False) == 1
+
+
+def test_a_shared_env_file_expands_each_app_s_own_values(project):
+    app = reader(project, GOOGLE.replace("  project: my-project\n", ""))
+    (project / ".env").write_text("PDT_GOOGLE_CLOUD_PROJECT=${PROJECT_ID}\n")
+    (project / "reader" / ".env").write_text("PROJECT_ID=project-a\n")
+    (project / APP / ".env").write_text("PROJECT_ID=project-b\n")
+    assert config.app_environment(project / APP, {})["PDT_GOOGLE_CLOUD_PROJECT"] == "project-b"
+    assert config.app_environment(project / APP, {"PROJECT_ID": "c"})["PDT_GOOGLE_CLOUD_PROJECT"] == "c"
+    message = place_problem(app, base={})
+    assert f"names {APP}, which deploys to google-cloud, region us-central1, project project-b." in message
+    assert "reader deploys to Google Cloud project project-a" in message
+
+
+def test_each_deploy_of_a_run_checks_where_the_run_deploys_the_read_app(project, monkeypatch):
+    reader(project, AZURE_ID.replace(SUB_1, SUB_2), read_from="warehouse")
+    add_app(project, "warehouse", "schedule: daily\n")
+    config.mark_deployed("warehouse", {"provider": "azure", "region": "eastus", "subscription": SUB_1})
+    Cloud(monkeypatch)
+    # --yes does not move warehouse from its recorded subscription, so only its deploy stops.
+    cli.deploy_all(assume_yes=True, skip_failures=True)
+    assert config.deployed_places()["reader"]["subscription"] == SUB_2
+
+
+@pytest.mark.parametrize("everything", [False, True])
+def test_the_place_message_comes_before_the_provider_problem(project, monkeypatch, capsys, everything):
+    reader(project, AZURE_ID)
+    (project / APP / "pdt.yml").write_text("platform:\n  provider: google-cloud\n  project: p\n")
+    config.mark_deployed(APP, {"provider": "google-cloud", "region": "us-central1", "project": "p"})
+    monkeypatch.setattr(config, "missing_env", lambda app: pytest.fail("env checked"))
+    cloud = Cloud(monkeypatch)
+    if everything:
+        assert cli.deploy_all(assume_yes=True, skip_failures=False) == 1
+    else:
+        assert deploy.deploy("reader", run=False) == 1
+    assert cloud.calls == []
+    out = " ".join(capsys.readouterr().out.split())
+    where = "deploys to google-cloud, region eastus" if everything else (
+        "is deployed to google-cloud, region us-central1")
+    assert f"names {APP}, which {where}, project p. reader deploys to Azure subscription" in out
+    assert "uses the google-cloud provider" not in out
+
+
+def test_a_subscription_compares_only_by_its_id(project):
+    app = reader(project, AZURE.replace("sub-1", "Pay-As-You-Go"))
+    config.mark_deployed(APP, {"provider": "azure", "region": "eastus", "subscription": SUB_2})
+    assert place_problem(app) == ""
+    config.mark_deployed("reader", {"provider": "azure", "region": "eastus", "subscription": SUB_1})
+    assert f"reader deploys to Azure subscription {SUB_1} and" in place_problem(app)
+    config.mark_deployed(APP, {"provider": "azure", "region": "eastus", "subscription": "Production"})
+    assert place_problem(app) == ""
+
+
+def test_a_subscription_id_compares_in_any_case(project):
+    app = reader(project, AZURE_ID.replace(SUB_1, SUB_1.upper().replace("1", "A")))
+    config.mark_deployed(APP, {"provider": "azure", "region": "eastus",
+                               "subscription": SUB_1.replace("1", "a")})
+    assert place_problem(app) == ""
+
+
+def test_the_id_found_for_a_display_name_stays_in_the_record_while_the_name_does(project):
+    app = reader(project, AZURE.replace("sub-1", "Prod"))
+    config.mark_deployed("reader", {"provider": "azure", "region": "eastus", "subscription": "Prod",
+                                    config.STORE_ID_KEY: SUB_1})
+    config.mark_deployed(APP, {"provider": "azure", "region": "eastus", "subscription": SUB_2})
+    assert f"reader deploys to Azure subscription {SUB_1} and" in place_problem(app)
+    deploy.record_place("reader", config.deployed_platform("reader"))
+    assert config.deployed_platform("reader")[config.STORE_ID_KEY] == SUB_1
+    (project / "pdt.yml").write_text(AZURE.replace("sub-1", "Dev"))
+    assert place_problem(config.merged_app("reader")) == ""
+    deploy.record_place("reader", config.deployed_platform("reader"))
+    assert config.STORE_ID_KEY not in config.deployed_platform("reader")
+
+
+def test_env_values_follow_load_dotenv_for_a_name_set_twice(project):
+    (project / APP / ".env").write_text("PROJECT_ID=old\nX=${PROJECT_ID}\nPROJECT_ID=new\n")
+    env = config.app_environment(project / APP, {})
+    assert (env["PROJECT_ID"], env["X"]) == ("new", "old")
+    from dotenv import dotenv_values
+    assert dotenv_values(project / APP / ".env") == {"PROJECT_ID": "new", "X": "old"}
+
+
+def test_validation_in_a_run_takes_the_place_the_run_deploys_the_read_app(project, monkeypatch):
+    reader(project, AZURE_ID, read_from="warehouse")
+    add_app(project, "warehouse", "schedule: daily\n")
+    config.mark_deployed("warehouse", {"provider": "windows"})
+    assert any("uses the windows provider" in problem for problem in config.validate_app("reader"))
+    Cloud(monkeypatch)
+    cli.deploy_all(assume_yes=True, skip_failures=True)
+    assert config.deployed_places()["reader"]["provider"] == "azure"
+
+
+def test_an_unknown_provider_is_left_to_validation(project):
+    app = reader(project, AZURE_ID)
+    assert deploy.read_place_problem(app, {}, {"reader": {"provider": "nowhere"}}) == ""
+
+
+@pytest.mark.parametrize("plan_only", [False, True])
+def test_a_read_app_with_no_provider_is_left_to_validation(project, monkeypatch, plan_only):
+    add_app(project, "reader", f"storage:\n  read: [{APP}]\n{AZURE_ID}")
+    (project / "pdt.yml").write_text("platform:\n  region: eastus\n")
+    app = config.merged_app("reader")
+    assert place_problem(app) == ""
+    assert deploy.read_place_problem(app, {}, {"reader": app["platform"], APP: {}}) == ""
+    Cloud(monkeypatch)
+    deploy.deploy("reader", assume_yes=True, run=False, plan_only=plan_only)
+
+
+def test_a_read_app_with_an_unknown_provider_is_left_to_validation(project):
+    app = reader(project, AZURE_ID)
+    planned = {"reader": deploy.destination("reader", {}), APP: {"provider": "nowhere"}}
+    assert deploy.read_place_problem(app, {}, planned) == ""
+
+
+def test_a_true_python_dotenv_disabled_reads_no_env_file(project):
+    (project / APP / ".env").write_text("PROJECT_ID=a\n")
+    assert "PROJECT_ID" not in config.app_environment(project / APP, {"PYTHON_DOTENV_DISABLED": "Yes"})
+    assert config.app_environment(project / APP, {"PYTHON_DOTENV_DISABLED": "0"})["PROJECT_ID"] == "a"
