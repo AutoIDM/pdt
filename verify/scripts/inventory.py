@@ -14,8 +14,16 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
+# Each AWS call starts its own CLI process. Eight at a time keeps a 4-CPU CI
+# runner busy and no API sees more than eight calls at once; the AWS CLI retries
+# a throttled call. The Azure and Google Cloud CLIs do not support parallel
+# commands that share one config directory, so their listings stay serial.
+PARALLEL_CALLS = 8
+CALLS = threading.BoundedSemaphore(PARALLEL_CALLS)
 MANAGED = {"managed-by": "pdt"}
 UNTAGGED = "untagged"
 SHARED = "shared"
@@ -76,8 +84,15 @@ def classify(resource: Resource, apps: list[str]) -> Owner:
     return SHARED
 
 
+def parallel(function, items) -> list:
+    """function(item) for each item, several at a time, in the order of items."""
+    with ThreadPoolExecutor(PARALLEL_CALLS) as pool:
+        return list(pool.map(function, items))
+
+
 def run_json(command: list[str]):
-    proc = subprocess.run(command, capture_output=True, text=True, check=False)
+    with CALLS:
+        proc = subprocess.run(command, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout).strip()
         raise InventoryError(f"{' '.join(command[:4])} failed: {detail}")
@@ -110,14 +125,14 @@ def gcloud_error(*args: str) -> str:
 
 
 def aws_functions(region: str) -> Inventory:
-    found = []
-    for item in (aws(region, "lambda", "list-functions") or {}).get("Functions") or []:
-        if not item["FunctionName"].startswith("pdt-"):
-            continue
+    def resource(item) -> Resource:
         arn = item["FunctionArn"]
         tags = (aws(region, "lambda", "list-tags", "--resource", arn) or {}).get("Tags") or {}
-        found.append(Resource("lambda function", arn, tags, item["FunctionName"]))
-    return found
+        return Resource("lambda function", arn, tags, item["FunctionName"])
+
+    listed = (aws(region, "lambda", "list-functions") or {}).get("Functions") or []
+    return parallel(resource, [item for item in listed
+                               if item["FunctionName"].startswith("pdt-")])
 
 
 def aws_caller_role(region: str) -> str:
@@ -131,29 +146,32 @@ def aws_caller_role(region: str) -> str:
 def aws_roles(region: str) -> Inventory:
     # The role this run signs in with may share the pdt- prefix, and it is
     # not something deploy made.
-    own = aws_caller_role(region)
-    found = []
-    for item in (aws(region, "iam", "list-roles") or {}).get("Roles") or []:
-        name = item["RoleName"]
-        if not name.startswith("pdt-") or name == own:
-            continue
-        listed = aws(region, "iam", "list-role-tags", "--role-name", name) or {}
+    def resource(item) -> Resource:
+        listed = aws(region, "iam", "list-role-tags", "--role-name", item["RoleName"]) or {}
         tags = {tag["Key"]: tag["Value"] for tag in listed.get("Tags") or []}
-        found.append(Resource("iam role", item["Arn"], tags, name))
-    return found
+        return Resource("iam role", item["Arn"], tags, item["RoleName"])
+
+    own, roles = parallel(lambda read: read(), [
+        lambda: aws_caller_role(region),
+        lambda: (aws(region, "iam", "list-roles") or {}).get("Roles") or []])
+    return parallel(resource, [item for item in roles
+                               if item["RoleName"].startswith("pdt-")
+                               and item["RoleName"] != own])
 
 
 def aws_log_groups(region: str) -> Inventory:
-    found = []
-    for prefix in AWS_LOG_PREFIXES:
+    def resource(item) -> Resource:
+        arn = (item.get("logGroupArn") or item["arn"]).removesuffix(":*")
+        tags = (aws(region, "logs", "list-tags-for-resource",
+                    "--resource-arn", arn) or {}).get("tags") or {}
+        return Resource("log group", arn, tags, item["logGroupName"])
+
+    def groups(prefix: str) -> Inventory:
         listed = aws(region, "logs", "describe-log-groups",
                      "--log-group-name-prefix", prefix) or {}
-        for item in listed.get("logGroups") or []:
-            arn = (item.get("logGroupArn") or item["arn"]).removesuffix(":*")
-            tags = (aws(region, "logs", "list-tags-for-resource",
-                        "--resource-arn", arn) or {}).get("tags") or {}
-            found.append(Resource("log group", arn, tags, item["logGroupName"]))
-    return found
+        return parallel(resource, listed.get("logGroups") or [])
+
+    return [found for listed in parallel(groups, AWS_LOG_PREFIXES) for found in listed]
 
 
 def aws_secrets(region: str) -> Inventory:
@@ -173,10 +191,11 @@ def aws_schedules(region: str) -> Inventory:
         if group["Name"] != "pdt":
             continue
         try:
-            tagged = aws(region, "scheduler", "list-tags-for-resource",
-                         "--resource-arn", group["Arn"]) or {}
-            schedules = aws(region, "scheduler", "list-schedules",
-                            "--group-name", group["Name"]) or {}
+            tagged, schedules = parallel(lambda read: read() or {}, [
+                lambda: aws(region, "scheduler", "list-tags-for-resource",
+                            "--resource-arn", group["Arn"]),
+                lambda: aws(region, "scheduler", "list-schedules",
+                            "--group-name", group["Name"])])
         except InventoryError as error:
             if "(ResourceNotFoundException)" not in str(error):
                 raise
@@ -236,22 +255,22 @@ def aws_clusters(region: str) -> Inventory:
 def aws_task_definitions(region: str) -> Inventory:
     listed = aws(region, "ecs", "list-task-definitions",
                  "--family-prefix", "pdt-", "--status", "ACTIVE") or {}
-    return [Resource("ecs task definition", arn, aws_ecs_tags(region, arn),
-                     arn.rsplit("/", 1)[-1])
-            for arn in listed.get("taskDefinitionArns") or []]
+    return parallel(lambda arn: Resource("ecs task definition", arn, aws_ecs_tags(region, arn),
+                                         arn.rsplit("/", 1)[-1]),
+                    listed.get("taskDefinitionArns") or [])
 
 
 def aws_repositories(region: str) -> Inventory:
-    found = []
-    for item in (aws(region, "ecr", "describe-repositories") or {}).get("repositories") or []:
-        name = item["repositoryName"]
-        if name != "pdt" and not name.startswith("pdt-"):
-            continue
+    def resource(item) -> Resource:
         arn = item["repositoryArn"]
         listed = aws(region, "ecr", "list-tags-for-resource", "--resource-arn", arn) or {}
         tags = {tag["Key"]: tag["Value"] for tag in listed.get("tags") or []}
-        found.append(Resource("ecr repository", arn, tags, name))
-    return found
+        return Resource("ecr repository", arn, tags, item["repositoryName"])
+
+    listed = (aws(region, "ecr", "describe-repositories") or {}).get("repositories") or []
+    return parallel(resource, [item for item in listed
+                               if item["repositoryName"] == "pdt"
+                               or item["repositoryName"].startswith("pdt-")])
 
 
 def aws_tagged(region: str) -> Inventory:
@@ -281,8 +300,8 @@ def aws_inventory(settings: dict[str, str]) -> Inventory:
     # The tagging API omits an untagged leftover, so the per-kind listings
     # above it decide what exists and it only adds what they do not cover.
     found: dict[str, Resource] = {}
-    for source in AWS_SOURCES:
-        for resource in source(settings["region"]):
+    for listed in parallel(lambda source: source(settings["region"]), AWS_SOURCES):
+        for resource in listed:
             found.setdefault(resource.id, resource)
     return sorted(found.values(), key=lambda resource: resource.id)
 
