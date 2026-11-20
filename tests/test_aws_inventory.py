@@ -1,6 +1,5 @@
 import subprocess
 import threading
-import time
 
 import pytest
 
@@ -76,7 +75,7 @@ def test_the_verify_role_policy_allows_every_inventory_call():
 
 
 def test_the_listers_and_the_tag_calls_of_one_inventory_run_at_the_same_time(monkeypatch):
-    both_tag_calls = threading.Barrier(2, timeout=5)
+    all_tag_calls = threading.Barrier(3, timeout=5)
 
     def aws(region, service, action, *args):
         if action == "list-functions":
@@ -84,11 +83,12 @@ def test_the_listers_and_the_tag_calls_of_one_inventory_run_at_the_same_time(mon
                 {"FunctionName": f"pdt-{name}", "FunctionArn": f"arn:aws:lambda:x:1:pdt-{name}"}
                 for name in ("b", "a")]}
         if action == "list-tags":
-            both_tag_calls.wait()
+            all_tag_calls.wait()
             return {"Tags": {"managed-by": "pdt"}}
         if action == "list-roles":
             return {"Roles": [{"RoleName": "pdt-runner", "Arn": "arn:aws:iam::1:role/pdt-runner"}]}
         if action == "list-role-tags":
+            all_tag_calls.wait()
             return {"Tags": [{"Key": "managed-by", "Value": "pdt"}]}
         return {}
 
@@ -99,21 +99,20 @@ def test_the_listers_and_the_tag_calls_of_one_inventory_run_at_the_same_time(mon
     assert all(resource.tags == {"managed-by": "pdt"} for resource in found)
 
 
-def test_at_most_eight_cli_processes_run_at_once(monkeypatch):
-    lock = threading.Lock()
-    running, most = 0, 0
+def test_at_most_eight_cli_processes_run_at_once_across_nested_reads(monkeypatch):
+    eight_calls = threading.Barrier(8, timeout=5)
+    ninth_call_could_start = []
 
     def run(command, **kwargs):
-        nonlocal running, most
-        with lock:
-            running += 1
-            most = max(most, running)
-        time.sleep(0.05)
-        with lock:
-            running -= 1
+        eight_calls.wait()
+        ninth_call_could_start.append(inventory.CALLS.acquire(blocking=False))
+        eight_calls.wait()
         return subprocess.CompletedProcess(command, 0, "{}", "")
 
+    def read(outer):
+        return inventory.parallel(lambda inner: inventory.aws("us-east-1", "sts", str(inner)),
+                                  range(4))
+
     monkeypatch.setattr(inventory.subprocess, "run", run)
-    assert inventory.parallel(lambda n: inventory.aws("us-east-1", "sts", str(n)), range(20)) \
-        == [{}] * 20
-    assert most == 8
+    assert inventory.parallel(read, range(4)) == [[{}] * 4] * 4
+    assert ninth_call_could_start == [False] * 16

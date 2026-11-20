@@ -11,7 +11,6 @@ hold resources that have nothing to do with pdt.
 
 from __future__ import annotations
 
-import functools
 import json
 import os
 import subprocess
@@ -19,10 +18,12 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
-# Each call starts its own CLI process. Eight at a time keeps a 4-CPU CI runner
-# busy and no API sees more than eight calls at once; the CLIs retry a throttled
-# call.
-CALLS = threading.BoundedSemaphore(8)
+# Each AWS call starts its own CLI process. Eight at a time keeps a 4-CPU CI
+# runner busy and no API sees more than eight calls at once; the AWS CLI retries
+# a throttled call. The Azure and Google Cloud CLIs do not support parallel
+# commands that share one config directory, so their listings stay serial.
+PARALLEL_CALLS = 8
+CALLS = threading.BoundedSemaphore(PARALLEL_CALLS)
 MANAGED = {"managed-by": "pdt"}
 UNTAGGED = "untagged"
 SHARED = "shared"
@@ -84,9 +85,8 @@ def classify(resource: Resource, apps: list[str]) -> Owner:
 
 
 def parallel(function, items) -> list:
-    """function(item) for each item, run at the same time, in the order of items."""
-    items = list(items)
-    with ThreadPoolExecutor(max(len(items), 1)) as pool:
+    """function(item) for each item, several at a time, in the order of items."""
+    with ThreadPoolExecutor(PARALLEL_CALLS) as pool:
         return list(pool.map(function, items))
 
 
@@ -119,9 +119,8 @@ def google_not_found(detail: str) -> bool:
 
 def gcloud_error(*args: str) -> str:
     """The error gcloud printed, or "" when the call succeeded."""
-    with CALLS:
-        proc = subprocess.run(["pdt", "gcloud", *args, "--format", "json"],
-                              capture_output=True, text=True, check=False)
+    proc = subprocess.run(["pdt", "gcloud", *args, "--format", "json"],
+                          capture_output=True, text=True, check=False)
     return "" if proc.returncode == 0 else (proc.stderr or proc.stdout).strip() or "failed"
 
 
@@ -161,19 +160,18 @@ def aws_roles(region: str) -> Inventory:
 
 
 def aws_log_groups(region: str) -> Inventory:
-    def groups(prefix: str) -> list:
-        listed = aws(region, "logs", "describe-log-groups",
-                     "--log-group-name-prefix", prefix) or {}
-        return listed.get("logGroups") or []
-
     def resource(item) -> Resource:
         arn = (item.get("logGroupArn") or item["arn"]).removesuffix(":*")
         tags = (aws(region, "logs", "list-tags-for-resource",
                     "--resource-arn", arn) or {}).get("tags") or {}
         return Resource("log group", arn, tags, item["logGroupName"])
 
-    return parallel(resource, [item for listed in parallel(groups, AWS_LOG_PREFIXES)
-                               for item in listed])
+    def groups(prefix: str) -> Inventory:
+        listed = aws(region, "logs", "describe-log-groups",
+                     "--log-group-name-prefix", prefix) or {}
+        return parallel(resource, listed.get("logGroups") or [])
+
+    return [found for listed in parallel(groups, AWS_LOG_PREFIXES) for found in listed]
 
 
 def aws_secrets(region: str) -> Inventory:
@@ -318,56 +316,44 @@ def azure_deleted_vaults() -> Inventory:
     return found
 
 
-def azure_group(group_name: str) -> Inventory:
-    if az("group", "exists", "--name", group_name) is not True:
-        return []
-    group, items = parallel(lambda args: az(*args), [
-        ("group", "show", "--name", group_name),
-        ("resource", "list", "--resource-group", group_name)])
-    found = [Resource("resource group", group["id"], group.get("tags") or {}, group["name"])]
-    for item in items or []:
-        found.append(Resource(item["type"], item["id"], item.get("tags") or {}, item["name"]))
-    return found
-
-
 def azure_inventory(settings: dict[str, str]) -> Inventory:
+    found = azure_deleted_vaults()
     # A named environment is the user's own, so its group is not pdt's to empty.
     groups = [settings["resource_group"]]
     if not settings["environment"]:
         groups.append(AZURE_SHARED_GROUP)
-    found = []
-    for listed in parallel(lambda read: read(), [
-            azure_deleted_vaults, *(functools.partial(azure_group, name) for name in groups)]):
-        found.extend(listed)
+    for group_name in groups:
+        if az("group", "exists", "--name", group_name) is not True:
+            continue
+        group = az("group", "show", "--name", group_name)
+        found.append(Resource("resource group", group["id"], group.get("tags") or {},
+                              group["name"]))
+        for item in az("resource", "list", "--resource-group", group_name) or []:
+            found.append(Resource(item["type"], item["id"], item.get("tags") or {},
+                                  item["name"]))
     return found
 
 
 def google_cloud_inventory(settings: dict[str, str]) -> Inventory:
     project, region = settings["project"], settings["region"]
-
-    def asset_name(item) -> str:
-        return str(item.get("displayName") or item["name"]).rsplit("/", 1)[-1]
-
-    def describe_error(item) -> str:
-        describe = GOOGLE_DESCRIBE[item["assetType"]](asset_name(item),
-                                                      item.get("location") or region)
-        return gcloud_error(*describe, "--project", project)
-
-    assets, jobs, own, accounts = parallel(lambda args: gcloud(*args), [
-        ("asset", "search-all-resources", f"--scope=projects/{project}",
-         "--asset-types=" + ",".join(GOOGLE_DESCRIBE)),
-        ("scheduler", "jobs", "list", "--location", region, "--project", project),
-        ("config", "get-value", "account"),
-        ("iam", "service-accounts", "list", "--project", project)])
     found = []
-    assets = [item for item in assets or [] if asset_name(item).startswith("pdt")]
-    for item, error in zip(assets, parallel(describe_error, assets)):
+    assets = gcloud("asset", "search-all-resources",
+                    f"--scope=projects/{project}",
+                    "--asset-types=" + ",".join(GOOGLE_DESCRIBE)) or []
+    for item in assets:
+        name = str(item.get("displayName") or item["name"]).rsplit("/", 1)[-1]
+        if not name.startswith("pdt"):
+            continue
+        describe = GOOGLE_DESCRIBE[item["assetType"]](name, item.get("location") or region)
+        error = gcloud_error(*describe, "--project", project)
         if google_not_found(error):
             continue
         note = f"describe failed: {error}" if error else ""
         found.append(Resource(item["assetType"], item["name"],
-                              dict(item.get("labels") or {}), asset_name(item), note))
-    for item in jobs or []:
+                              dict(item.get("labels") or {}), name, note))
+    jobs = gcloud("scheduler", "jobs", "list",
+                  "--location", region, "--project", project) or []
+    for item in jobs:
         name = str(item["name"]).rsplit("/", 1)[-1]
         if not name.startswith("pdt"):
             continue
@@ -377,7 +363,9 @@ def google_cloud_inventory(settings: dict[str, str]) -> Inventory:
                               dict(MANAGED) if managed else {}, name))
     # The account this run signs in with may share the pdt prefix, and it is
     # not something deploy made.
-    for item in accounts or []:
+    own = gcloud("config", "get-value", "account") or ""
+    accounts = gcloud("iam", "service-accounts", "list", "--project", project) or []
+    for item in accounts:
         name = str(item["email"]).split("@", 1)[0]
         if not name.startswith("pdt") or item["email"] == own:
             continue
