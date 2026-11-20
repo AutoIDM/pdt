@@ -7,10 +7,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: "47 6 * * *"
   workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -18,6 +20,7 @@ permissions:
 
 jobs:
   test:
+    if: github.event_name != 'schedule'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -31,22 +34,32 @@ jobs:
             python: "3.15"
           - os: windows-latest
             python: "3.12"
-          - os: macos-latest
-            python: "3.13"
-          - os: macos-latest
-            python: "3.15"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
-      - run: uv run --python ${{ matrix.python }} --group dev pytest -q
+      - run: uv run --python ${{ matrix.python }} --group dev pytest -q -m ""
+
+  # macOS runners often wait many minutes for a machine, so a pull request
+  # does not wait for this job.
+  test-macos:
+    if: github.event_name != 'pull_request'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv run --python 3.13 --group dev pytest -q -m ""
 
   # tests/ needs no network, so this job downloads the IntuneManagement that
   # tests/test_intune_export.py runs. On a pull request it runs only when the
   # Intune export changes; the job itself always runs, so it always reports.
   intune:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -86,11 +99,12 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
       - if: steps.changes.outputs.run == 'true'
-        run: uv run --python 3.13 --group dev pytest -q tests/test_intune_export.py
+        run: uv run --python 3.13 --group dev pytest -q -m "" tests/test_intune_export.py
         env:
           PDT_TEST_INTUNE: "1"
 
   smoke:
+    if: github.event_name != 'schedule'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -105,6 +119,7 @@ jobs:
       - run: uv run --python 3.12 python scripts/smoke.py
 
   lint:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -116,6 +131,7 @@ jobs:
 
   # Everything the verify matrix can prove without a cloud account.
   verify-check:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
