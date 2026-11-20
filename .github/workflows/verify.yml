@@ -30,6 +30,9 @@ env:
   PDT_SMOKE_TOKEN: pdt-verify
   PYTHONUNBUFFERED: "1"
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
