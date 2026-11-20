@@ -484,6 +484,7 @@ foreach ($folder in '.', 'daily-report', $env:ELSEWHERE) {
 """
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("shell", ["pwsh", "powershell"])
 def test_powershell_tab_completes_app_names(project, tmp_path_factory, shell):
     if shutil.which(shell) is None or shutil.which("pdt") is None:

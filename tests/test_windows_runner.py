@@ -181,6 +181,7 @@ def test_runner_keeps_old_logs_and_runs_folders(folders, monkeypatch):
     assert len(list(logs.glob("*.log"))) == 2
 
 
+@pytest.mark.slow
 @pytest.mark.skipif(os.name == "nt", reason="the fake uv is a shell script")
 def test_runner_ends_when_the_app_exits_though_a_background_process_holds_its_output(
         folders, tmp_path):
