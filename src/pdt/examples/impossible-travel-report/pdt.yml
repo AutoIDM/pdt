@@ -3,7 +3,8 @@
 # How often this app runs.
 # Shorthand: hourly, daily, weekly, monthly, yearly.
 # Or a 5-field cron expression, for example "0 * * * *".
-schedule: "hourly"
+job:
+  schedule: "hourly"
 
 config:
   # How far back to read Entra sign-in logs. Two far logins inside

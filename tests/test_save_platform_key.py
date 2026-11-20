@@ -44,6 +44,14 @@ def test_replaces_a_value_that_is_already_there(project):
     assert saved.read_text().count("region:") == 1
 
 
+def test_replaces_a_value_on_the_next_lines_after_a_comment(project):
+    (project / "pdt.yml").write_text('platform:\n  provider: aws\n# choose later\n  "region":\n'
+                                     "    null\napps: []\n")
+    add_app(project, "my-report")
+    saved = save_platform_key(merged_app("my-report"), "region", "eu-west-1")
+    assert load_yaml(saved) == {"platform": {"provider": "aws", "region": "eu-west-1"}, "apps": []}
+
+
 def test_creates_the_platform_block_when_there_is_none(project):
     (project / "pdt.yml").write_text("apps: []\n")
     add_app(project, "my-report", "platform:\n  provider: aws\n")

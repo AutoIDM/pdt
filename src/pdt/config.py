@@ -61,6 +61,8 @@ APP_KEYS = {"name", "app_profile", "schedule", "timezone", "platform", "config",
             "web", "job"}
 # The keys of a job's `job:` section. Each one also works at the top level of the app.
 JOB_KEYS = {"schedule", "timezone"}
+# Azure evaluates a Container Apps job's cron schedule only in UTC.
+AZURE_TIMEZONES = ("Etc/UTC", "UTC")
 # `storage:` is `true`, `false`, or a mapping with these keys.
 STORAGE_KEYS = {"enabled", "read"}
 # Where a cloud provider builds the image: with Docker on this computer when
@@ -357,9 +359,12 @@ def merged_app(name: str) -> dict:
     own_job, entry_job = mapping(own, "job", own_where), mapping(entry, "job", entry_where)
 
     def job_key(key: str, default=None):
-        """A `job:` key, else the same key at the top level, the app's file before the entry."""
+        """A `job:` key, else the same key at the top level, the app's file before the entry.
+
+        A key set to null is not set.
+        """
         for section in (own_job, own, entry_job, entry):
-            if key in section:
+            if section.get(key) is not None:
                 return section[key]
         return default
 
@@ -461,6 +466,94 @@ def save_app_key(app: dict, key: str, value) -> Path:
     return path
 
 
+def save_job_key(app: dict, key: str, value, drop_top_level: bool = False) -> Path:
+    """Write one `job:` key into the app's pdt.yml, the most specific file, and with
+    `drop_top_level` remove the same key from the top level of the file.
+
+    Edits the text so the user's comments survive, under the same lock and atomic replace
+    as `save_platform_key`, and adds a `job:` block when the file has none. When the edit
+    inside the block would change anything else in the file, as with `job: {schedule: null}`,
+    the `job:` section is written again as a block with the same keys. The result must parse
+    to the same data apart from this key, or nothing is written.
+    """
+    import yaml
+    path = app_file(app["dir"])
+    if keep_unsaved(key, value):
+        return path
+    with locked(path):
+        lines = path.read_text(encoding="utf-8-sig").splitlines() if path.is_file() else []
+        current = yaml.safe_load("\n".join(lines)) or {}
+        job = current.get("job") or {}
+        expected = {**current, "job": {**job, key: value}}
+        if drop_top_level:
+            expected.pop(key, None)
+            top = next((i for i, line in enumerate(lines)
+                        if not line.startswith((" ", "\t"))
+                        and line.split("#")[0].strip().startswith(f"{key}:")), None)
+            if top is not None:
+                end = top + 1
+                while end < len(lines) and lines[end].strip() and lines[end].startswith((" ", "\t")):
+                    end += 1
+                del lines[top:end]
+        start = next((i for i, line in enumerate(lines)
+                      if not line.startswith((" ", "\t"))
+                      and line.split("#")[0].strip().startswith("job:")), None)
+        if job.get(key) == value:
+            tries = [lines]
+        elif start is None:
+            tries = [lines + ([""] if lines and lines[-1].strip() else [])
+                     + ["job:", f"  {key}: {yaml_quoted(value)}"]]
+        else:
+            end = start + 1
+            while end < len(lines) and lines[end].strip() and lines[end].startswith((" ", "\t")):
+                end += 1
+            block = yaml.safe_dump({"job": {**job, key: value}}, sort_keys=False).splitlines()
+            tries = [lines[:start] + block + lines[end:]]
+            if lines[start].split("#")[0].rstrip() == "job:":
+                edited = list(lines)
+                _set_block_key(edited, start, key, yaml_quoted(value))
+                tries.insert(0, edited)
+        result = None
+        for edited in tries:
+            try:
+                loaded = yaml.safe_load("\n".join(edited))
+            except yaml.YAMLError:
+                continue
+            if loaded == expected:
+                result = edited
+                break
+        if result is None:
+            raise ConfigError(f"{path.relative_to(find_project())}: pdt could not write {key} "
+                              f"under job:. Put `{key}: {yaml_quoted(value)}` under `job:` "
+                              f"in this file and run the command again.")
+        write_text_atomically(path, "\n".join(result) + "\n")
+    return path
+
+
+def _set_block_key(lines: list[str], start: int, key: str, text: str) -> None:
+    """Set `key` in the indented block under the line `start`, keeping its indent."""
+    end = start + 1
+    while end < len(lines) and (lines[end].startswith((" ", "\t", "#")) or lines[end].strip() == ""):
+        end += 1
+    block = range(start + 1, end)
+    existing = next((i for i in block if lines[i].strip().startswith(
+        (f"{key}:", f'"{key}":', f"'{key}':"))), None)
+    if existing is not None:
+        lines[existing] = f"{_indent(lines[existing])}{key}: {text}"
+        while (existing + 1 < len(lines) and lines[existing + 1].strip()
+               and len(_indent(lines[existing + 1])) > len(_indent(lines[existing]))):
+            del lines[existing + 1]
+    else:
+        first = next((i for i in block
+                      if lines[i].strip() and not lines[i].strip().startswith("#")), None)
+        indent = _indent(lines[first]) if first is not None else "  "
+        at = (first if first is not None else start) + 1
+        while (first is not None and at < len(lines) and lines[at].strip()
+               and len(_indent(lines[at])) > len(indent)):
+            at += 1
+        lines.insert(at, f"{indent}{key}: {text}")
+
+
 def save_platform_key(app: dict, key: str, value: str, path: Path | None = None) -> Path:
     """Write one platform key into `path`, or else into pdt.yml when the app has the provider
     of pdt.yml, and into the app's pdt.yml when it does not."""
@@ -484,18 +577,7 @@ def save_platform_key(app: dict, key: str, value: str, path: Path | None = None)
         if start is None:
             lines += ["platform:", f"  {key}: {yaml_quoted(value)}"]
         else:
-            end = start + 1
-            while end < len(lines) and (lines[end].startswith((" ", "\t")) or lines[end].strip() == ""):
-                end += 1
-            block = range(start + 1, end)
-            existing = next((i for i in block if lines[i].strip().startswith(f"{key}:")), None)
-            if existing is not None:
-                lines[existing] = f"{_indent(lines[existing])}{key}: {yaml_quoted(value)}"
-            else:
-                first = next((i for i in block
-                              if lines[i].strip() and not lines[i].strip().startswith("#")), None)
-                indent = _indent(lines[first]) if first is not None else "  "
-                lines.insert((first if first is not None else start) + 1, f"{indent}{key}: {yaml_quoted(value)}")
+            _set_block_key(lines, start, key, yaml_quoted(value))
         write_text_atomically(path, "\n".join(lines) + "\n")
     console.done(f"Saved {console.escape(key)} {console.value(value)} to {console.value(shown)}.")
     return path
@@ -1355,19 +1437,36 @@ def storage_problems(app: dict, storage) -> list[str]:
     return problems
 
 
+def job_value_problem(key: str, value, provider: str) -> str:
+    """Why `value` cannot be the job key `key` of an app on `provider`, or ""."""
+    if key == "timezone":
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+        if provider == "windows":
+            return ""
+        if provider == "azure" and value not in AZURE_TIMEZONES:
+            return (f"timezone {value!r}: Azure evaluates cron schedules only in UTC; "
+                    "set timezone: Etc/UTC")
+        try:
+            ZoneInfo(value)
+        except (TypeError, ValueError, ZoneInfoNotFoundError):
+            return f"timezone {value!r} is not a time zone name, such as America/Chicago"
+        return ""
+    try:
+        cron = cron_expression(value)
+    except ConfigError as e:
+        return str(e)
+    problem = windows_schedule_problem(cron) if provider == "windows" else ""
+    return f"schedule: {problem}" if problem != "" else ""
+
+
 def job_problems(app: dict, provider: str) -> list[str]:
-    """The checks of a job's `job:` section and schedule."""
+    """The checks of a job's `job:` section, schedule, and time zone."""
     name = app["name"]
     problems = key_problems(f"{name}/{APP_FILE}: job", app["job"], JOB_KEYS)
-    if app["schedule"] is not None:
-        try:
-            cron = cron_expression(app["schedule"])
-        except ConfigError as e:
-            problems.append(f"{name}: {e}")
-        else:
-            problem = windows_schedule_problem(cron) if provider == "windows" else ""
-            if problem != "":
-                problems.append(f"{name}: schedule: {problem}")
+    for key in sorted(JOB_KEYS):
+        problem = job_value_problem(key, app[key], provider) if app[key] is not None else ""
+        if problem != "":
+            problems.append(f"{name}: {problem}")
     if app["web"]:
         problems.append(f"{name}: web: only an app with app_profile: web uses this "
                         "section; remove it, or set app_profile: web")

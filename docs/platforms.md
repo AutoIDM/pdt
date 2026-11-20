@@ -90,7 +90,8 @@ platform:
 
 apps:
   - name: my-report
-    schedule: daily
+    job:
+      schedule: daily
 ```
 
 The Windows provider runs each job on the PC's local time. It needs no `timezone`, and ignores one that is set.

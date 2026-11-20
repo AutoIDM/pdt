@@ -79,7 +79,8 @@ alerts:
 
 apps:
   - name: my-report
-    schedule: daily
+    job:
+      schedule: daily
     platform:
       region: us-west-2
 ```
@@ -163,8 +164,8 @@ Put these keys at the top level of the app's `pdt.yml`, or in its entry in the `
 | --- | --- | --- | --- |
 | `name` | The name of the app folder. | In the app's `pdt.yml`, the folder name. An `apps:` entry must have it. | Connects an `apps:` entry to an app folder. In the app's `pdt.yml` it must match the folder name. |
 | `app_profile` | `job` or `web`. | `job` | Selects the kind of app. A `job` runs on a schedule and exits. A `web` app is an HTTP server behind a sign-in. |
-| `schedule` | See [`job:` keys](#job-keys). | | A job's schedule. The same as `job.schedule`. |
-| `timezone` | A time zone name, for example `America/Chicago`. | `platform.timezone`, then `Etc/UTC`. | Sets the time zone of this app's schedule. The `windows` provider ignores it. |
+| `schedule` | See [`job:` keys](#job-keys). | | A job's schedule, read only when `job.schedule` is missing or `null`. Put it under `job:` instead. |
+| `timezone` | A time zone name, for example `America/Chicago`. | `platform.timezone`, then `Etc/UTC`. | The time zone of a job's schedule, read only when `job.timezone` is missing or `null`. Put it under `job:` instead. The `windows` provider ignores it. |
 | `platform` | A block of [`platform:` keys](#platform-keys). | The `platform:` block of `pdt.yml`. | Replaces each named key for this app. |
 | `config` | A block of your own keys. See [`config:` keys](#config-keys). | Empty. | Holds the settings that your app reads. |
 | `env` | A block with [`env:` keys](#env-keys). | Empty. | Names the env vars that the app needs. |
@@ -204,12 +205,14 @@ A cron value that starts with `*` must be in quotes, for example `"*/15 * * * *"
 
 ### `job:` keys
 
-These keys apply only to a job. Each one also works at the top level of the app's `pdt.yml`, where older apps have it. New apps put them in `job:`. When both places set a key, `job:` wins.
+These keys apply only to a job. Put them under `job:`. A key with the value `null`, or with no value, is not set. Older apps have these keys at the top level of the app's `pdt.yml`. pdt reads a top-level key only when the same key under `job:` is not set.
+
+When the app's `pdt.yml` sets a key both under `job:` and at the top level, `pdt deploy` asks which value to keep. It writes that value under `job:` and removes the top-level key. When the two values are the same, it removes the top-level key with no question. With `--yes`, in a plan, or with no terminal, the deploy uses the value under `job:` and changes no file. It prints a note when the two values differ. When the top-level value is not valid, the deploy asks nothing, uses the value under `job:`, changes no file, and prints a note that names the problem.
 
 | Key | Allowed values | Default | What it does |
 | --- | --- | --- | --- |
-| `schedule` | `hourly`, `daily`, `weekly`, `monthly`, `yearly`, or a 5-field cron expression in quotes. | No schedule. The first deploy asks for one and saves it. With `--yes`, the deploy uses `daily`. | Sets when the job runs. The `windows` provider accepts fewer forms. See [Windows Task Scheduler](platforms.md#windows-task-scheduler). |
-| `timezone` | A time zone name, for example `America/Chicago`. | `platform.timezone`, then `Etc/UTC`. | Sets the time zone of the schedule. The `windows` provider ignores it. |
+| `schedule` | `hourly`, `daily`, `weekly`, `monthly`, `yearly`, or a 5-field cron expression in quotes. | No schedule. The first deploy asks for one and saves it under `job:` in the app's `pdt.yml`. It adds the `job:` section when the file has none. With `--yes`, the deploy uses `daily`. | Sets when the job runs. The `windows` provider accepts fewer forms. See [Windows Task Scheduler](platforms.md#windows-task-scheduler). |
+| `timezone` | A time zone name, for example `America/Chicago`. | `platform.timezone`, then `Etc/UTC`. | Sets the time zone of the schedule. `pdt validate` reports a value that is not a time zone name. The `azure` provider accepts only `Etc/UTC` or `UTC`. The `windows` provider ignores it. |
 
 ```yaml
 # my-report/pdt.yml
@@ -328,7 +331,8 @@ These keys apply only to a PowerShell app.
 
 ```yaml
 # my-powershell-job/pdt.yml
-schedule: daily
+job:
+  schedule: daily
 run_scripts: [get-users.ps1, send-report.ps1]
 continue_on_error: true
 ```
