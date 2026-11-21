@@ -2,7 +2,9 @@
 # tier::architectural with the ci/claude-tasks/score-prs task, and merges a
 # scored tier::simple PR once every check on its head commit passed.
 # A pull_request event scores that PR alone. The schedule sweeps every open
-# PR. A manual run is a dry run unless its dry_run box is cleared.
+# PR. A manual run is a dry run unless its dry_run box is cleared. When a ci
+# run of a PR from this repository succeeds, the merge job tries the merge of
+# that PR alone: it runs no Claude and scores nothing.
 # Needs the secret CLAUDE_TOKEN (from `claude setup-token`). The optional
 # secret PDT_BOT_TOKEN merges as a user, because a merge made with
 # GITHUB_TOKEN starts no workflow on the default branch.
@@ -20,9 +22,14 @@ on:
         description: List what would change, and change nothing
         type: boolean
         default: true
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
 
+# A merge attempt has its own group, so it never replaces a pending scoring
+# run, and a scoring run never replaces a pending merge attempt.
 concurrency:
-  group: score-prs
+  group: ${{ github.event_name == 'workflow_run' && format('score-prs-merge-{0}', github.event.workflow_run.head_sha) || 'score-prs' }}
   cancel-in-progress: false
 
 permissions:
@@ -41,7 +48,7 @@ jobs:
   # GitHub gives a Dependabot pull_request run no Actions secrets, so that run
   # skips and the daily sweep scores the PR.
   score-prs:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]'
+    if: github.event_name != 'workflow_run' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -87,3 +94,20 @@ jobs:
           path: claude-task-report/
           retention-days: 30
           if-no-files-found: ignore
+
+  # A workflow_run job has the secrets, so it runs only the default branch's
+  # select_prs.py and never code from the PR.
+  merge:
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_repository.full_name == github.repository && github.event.workflow_run.actor.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ secrets.PDT_BOT_TOKEN || github.token }}
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      DRY_RUN: "false"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - run: python3 ci/claude-tasks/score-prs/select_prs.py

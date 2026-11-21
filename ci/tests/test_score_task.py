@@ -530,6 +530,49 @@ def test_a_run_without_an_event_sweeps_every_open_pr(monkeypatch, capsys):
     assert [item["number"] for item in items] == [1, 2]
 
 
+# --- a completed ci run tries the merge of one PR -----------------------------
+
+def test_a_ci_run_merges_only_the_pr_with_its_head_and_scores_nothing(monkeypatch, capsys):
+    monkeypatch.delenv("PR_NUMBER", raising=False)
+    monkeypatch.setenv("HEAD_SHA", "sha2")
+    docs = [change("README.md")]
+    prs = {1: {**pr(1), "_files": docs}, 2: {**pr(2), "_files": docs}}
+    comments = {1: scored(docs, "simple"), 2: scored(docs, "simple")}
+    items, err, calls, fetches = run_select(monkeypatch, capsys, prs, comments)
+    assert items == [] and fetches == []
+    assert "ci completed on sha2: trying the merge of its PR only" in err
+    assert "merged      #2" in err
+    writes = [(m, p) for m, p, _ in calls if m in ("PUT", "POST", "DELETE") and p != "/graphql"]
+    assert writes == [("PUT", f"/repos/{FULL_NAME}/pulls/2/merge"),
+                      ("POST", f"/repos/{FULL_NAME}/issues/2/comments"),
+                      ("DELETE", f"/repos/{FULL_NAME}/git/refs/heads/branch-2")]
+    assert not [p for _, p, _ in calls if "/pulls/1" in p or "/issues/1/" in p]
+
+
+def test_a_ci_run_leaves_an_unscored_or_unfinished_pr_alone(monkeypatch, capsys):
+    monkeypatch.setenv("HEAD_SHA", "sha1")
+    docs = [change("README.md")]
+    items, err, calls, _ = run_select(monkeypatch, capsys, {1: {**pr(1), "_files": docs}}, {})
+    assert items == []
+    assert "not scored  #1" in err
+    assert all(method == "GET" for method, _, _ in calls)
+
+    unfinished = {1: {**pr(1), "_files": docs, "_checks": [run("CodeQL", "in_progress", None)]}}
+    items, err, calls, _ = run_select(monkeypatch, capsys, unfinished, {1: scored(docs, "simple")})
+    assert items == []
+    assert "blocked     #1" in err and "check CodeQL in_progress" in err
+    assert not [m for m, p, _ in calls if m != "GET" and p != "/graphql"]
+
+
+def test_a_ci_run_on_a_commit_no_open_pr_has_lists_nothing(monkeypatch, capsys):
+    monkeypatch.setenv("HEAD_SHA", "sha9")
+    items, err, calls, _ = run_select(monkeypatch, capsys, {1: {**pr(1), "_files": []}}, {})
+    assert items == []
+    assert "no open PR of this repository has that head" in err
+    assert [p for _, p, _ in calls] == [
+        "/user", f"/repos/{FULL_NAME}/pulls?state=open&base=main&per_page=100"]
+
+
 # --- check hook end to end ----------------------------------------------------
 
 def run_check(monkeypatch, capsys, item, result, routes=(), dry_run="false"):
@@ -654,11 +697,13 @@ def test_score_prs_workflow_runs_on_the_three_pr_events_a_schedule_and_by_hand()
     assert flow["on"]["pull_request"] == {"types": ["opened", "reopened", "ready_for_review"]}
     assert flow["on"]["schedule"]
     assert flow["on"]["workflow_dispatch"]["inputs"]["dry_run"]["default"] is True
-    assert flow["concurrency"] == {"group": "score-prs", "cancel-in-progress": False}
+    assert flow["concurrency"]["group"].endswith("|| 'score-prs' }}")
+    assert flow["concurrency"]["cancel-in-progress"] is False
     assert flow["permissions"] == {"contents": "write", "pull-requests": "write",
                                    "issues": "write", "checks": "read", "statuses": "read"}
-    assert list(flow["jobs"]) == [select.OWN_CHECK]
+    assert list(flow["jobs"]) == [select.OWN_CHECK, "merge"]
     job = flow["jobs"][select.OWN_CHECK]
+    assert job["if"].startswith("github.event_name != 'workflow_run' && (")
     assert "head.repo.full_name == github.repository" in job["if"]
     assert "secrets.PDT_BOT_TOKEN || github.token" in job["env"]["GH_TOKEN"]
     assert "secrets.CLAUDE_TOKEN" in job["env"]["CLAUDE_CODE_OAUTH_TOKEN"]
@@ -670,3 +715,24 @@ def test_score_prs_workflow_runs_on_the_three_pr_events_a_schedule_and_by_hand()
     assert score["run"].rstrip().endswith("|| [ $? -eq 2 ]")
     upload = job["steps"][-1]
     assert upload["if"] == "always()" and upload["with"]["retention-days"] == 30
+
+
+def test_a_successful_ci_run_of_a_pr_from_this_repository_starts_a_merge_attempt():
+    flow = workflow("score-prs.yml")
+    assert flow["on"]["workflow_run"] == {"workflows": ["ci"], "types": ["completed"]}
+    assert "format('score-prs-merge-{0}', github.event.workflow_run.head_sha)" in \
+        flow["concurrency"]["group"]
+    job = flow["jobs"]["merge"]
+    for gate in ("github.event_name == 'workflow_run'",
+                 "github.event.workflow_run.event == 'pull_request'",
+                 "github.event.workflow_run.conclusion == 'success'",
+                 "github.event.workflow_run.head_repository.full_name == github.repository"):
+        assert gate in job["if"]
+    assert job["env"]["HEAD_SHA"] == "${{ github.event.workflow_run.head_sha }}"
+    assert job["env"]["DRY_RUN"] == "false"
+    assert "secrets.PDT_BOT_TOKEN || github.token" in job["env"]["GH_TOKEN"]
+    assert not [key for key in job["env"] if "CLAUDE" in key], "a merge attempt runs no Claude"
+    checkout, merge = job["steps"]
+    assert checkout["uses"].startswith("actions/checkout@")
+    assert "default_branch" in checkout["with"]["ref"], "never run code from the PR"
+    assert merge["run"] == "python3 ci/claude-tasks/score-prs/select_prs.py"
