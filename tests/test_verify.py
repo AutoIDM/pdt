@@ -358,6 +358,27 @@ def test_each_check_waits_its_own_deadline():
     assert len(after_destroy) == 3
 
 
+def test_a_check_that_passed_stays_recorded_when_the_next_read_fails():
+    cloud = FakeCloud()
+    cloud.also_removes = {"app-one": ["pdt-app-two"]}
+    destroyed = []
+
+    def inventory():
+        if cloud.calls and cloud.calls[-1] == ("destroy", "app-one"):
+            destroyed.append(1)
+            if len(destroyed) > 1:
+                raise RuntimeError("the cloud said no")
+        return cloud.inventory()
+
+    steps = verify(cloud.apps, cloud.run_pdt, inventory, report=lambda step: None, wait=now)
+    assert [(step.name, step.ok) for step in steps[-3:]] == [
+        ("destroy app-one", True),
+        ("app-one resources are gone", True),
+        ("unexpected error", False),
+    ]
+    assert cloud.calls[-2:] == [("destroy", "app-one"), ("destroy", "app-two")]
+
+
 def test_the_last_destroy_waits_until_the_listing_catches_up():
     cloud = FakeCloud()
     registry = Resource("registry", "pdt-registry", tagged(), "pdt-registry")
@@ -433,13 +454,16 @@ def test_each_azure_call_runs_in_its_own_copy_of_the_signed_in_folder(monkeypatc
 
     signed_in = tmp_path / "azure"
     signed_in.mkdir()
-    (signed_in / "azureProfile.json").write_text("{}")
-    (signed_in / "telemetry").mkdir()
-    (signed_in / "commands").mkdir()
+    login = ["azureProfile.json", "msal_token_cache.json", "service_principal_entries.json"]
+    for name in [*login, "telemetry.txt"]:
+        (signed_in / name).write_text("{}")
+    for name in ("telemetry", "commands", "logs"):
+        (signed_in / name).mkdir()
     monkeypatch.setenv("AZURE_CONFIG_DIR", str(signed_in))
     folders = []
 
     def run(command, env, **kwargs):
+        assert env["AZURE_CORE_COLLECT_TELEMETRY"] == "no"
         folder = env["AZURE_CONFIG_DIR"]
         folders.append((folder, sorted(path.name for path in Path(folder).iterdir())))
         return subprocess.CompletedProcess(command, 0, "[]", "")
@@ -447,7 +471,7 @@ def test_each_azure_call_runs_in_its_own_copy_of_the_signed_in_folder(monkeypatc
     monkeypatch.setattr(inventory.subprocess, "run", run)
     inventory.az("group", "list")
     inventory.az("group", "list")
-    assert [names for _, names in folders] == [["azureProfile.json"], ["azureProfile.json"]]
+    assert [names for _, names in folders] == [login, login]
     assert len({folder for folder, _ in folders} | {str(signed_in)}) == 3
     assert not any(Path(folder).exists() for folder, _ in folders)
 
