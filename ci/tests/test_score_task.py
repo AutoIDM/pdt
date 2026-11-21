@@ -759,6 +759,6 @@ def test_a_scoring_run_tries_the_merge_after_it_scores():
     names = [step.get("name") for step in steps]
     after = steps[names.index("Score pull requests") + 1]
     assert after["name"] == "Merge the pull requests just scored simple"
-    assert after["if"] == "env.DRY_RUN != 'true'"
+    assert after["if"] == "${{ !cancelled() && env.DRY_RUN != 'true' }}"
     assert "env" not in after, "it reads the PR's current head, as the scoring did"
     assert after["run"] == "python3 ci/claude-tasks/score-prs/select_prs.py > /dev/null"
