@@ -754,11 +754,11 @@ def test_a_successful_ci_run_of_a_pr_from_this_repository_starts_a_merge_attempt
     assert merge["run"] == "python3 ci/claude-tasks/score-prs/select_prs.py"
 
 
-def test_a_pull_request_run_tries_the_merge_after_it_scores():
+def test_a_scoring_run_tries_the_merge_after_it_scores():
     steps = workflow("score-prs.yml")["jobs"][select.OWN_CHECK]["steps"]
     names = [step.get("name") for step in steps]
     after = steps[names.index("Score pull requests") + 1]
-    assert after["name"] == "Try the merge of the scored pull request"
-    assert after["if"] == "github.event_name == 'pull_request'"
-    assert after["env"] == {"HEAD_SHA": "${{ github.event.pull_request.head.sha }}"}
-    assert after["run"] == "python3 ci/claude-tasks/score-prs/select_prs.py"
+    assert after["name"] == "Merge the pull requests just scored simple"
+    assert after["if"] == "env.DRY_RUN != 'true'"
+    assert "env" not in after, "it reads the PR's current head, as the scoring did"
+    assert after["run"] == "python3 ci/claude-tasks/score-prs/select_prs.py > /dev/null"

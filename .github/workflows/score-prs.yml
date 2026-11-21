@@ -4,8 +4,9 @@
 # A pull_request event scores that PR alone. The schedule sweeps every open
 # PR. A manual run is a dry run unless its dry_run box is cleared. When a ci
 # run of a PR from this repository succeeds, the merge job tries the merge of
-# that PR alone: it runs no Claude and scores nothing. A pull_request run also
-# tries the merge after it scores, for a PR whose ci finished first.
+# that PR alone: it runs no Claude and scores nothing. A scoring run that is
+# not a dry run also tries the merge after it scores, for a PR whose ci
+# finished first.
 # Needs the secret CLAUDE_TOKEN (from `claude setup-token`). The optional
 # secret PDT_BOT_TOKEN merges as a user, because a merge made with
 # GITHUB_TOKEN starts no workflow on the default branch.
@@ -88,11 +89,9 @@ jobs:
         run: >
           uv run --python 3.13 python ci/claude_task.py score-prs
           ${{ env.DRY_RUN == 'true' && '--dry-run' || '' }} || [ $? -eq 2 ]
-      - name: Try the merge of the scored pull request
-        if: github.event_name == 'pull_request'
-        env:
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: python3 ci/claude-tasks/score-prs/select_prs.py
+      - name: Merge the pull requests just scored simple
+        if: env.DRY_RUN != 'true'
+        run: python3 ci/claude-tasks/score-prs/select_prs.py > /dev/null
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:

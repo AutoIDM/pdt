@@ -27,10 +27,9 @@ can run ``git diff origin/<base>...origin/<branch>`` without fetching.
 
 A run the pull_request event started sets PR_NUMBER and looks at that PR
 alone. A schedule or manual run sweeps every open PR, which also picks up a
-changed diff. A completed ``ci`` run, and the end of a pull_request run, set
-HEAD_SHA: that run tries the merge of the open PR with that head commit and
-nothing else, so it scores nothing, fetches no branch, and lists no item for
-Claude.
+changed diff. A completed ``ci`` run sets HEAD_SHA: that run tries the merge
+of the open PR with that head commit and nothing else, so it scores nothing,
+fetches no branch, and lists no item for Claude.
 
 Environment:
   GH_TOKEN         token with contents and pull-requests write. A merge made
@@ -39,7 +38,7 @@ Environment:
   DRY_RUN          anything but the exact word ``false`` means list and change
                    nothing.
   PR_NUMBER        the PR of a pull_request event. Absent on a sweep.
-  HEAD_SHA         the head commit whose PR to try to merge. Absent otherwise.
+  HEAD_SHA         the head commit of a completed ``ci`` run. Absent otherwise.
   DEFAULT_BRANCH   the branch a PR must target; ``main`` when unset.
   GITHUB_REPOSITORY, GITHUB_API_URL, GITHUB_GRAPHQL_URL   set by GitHub Actions.
 
