@@ -11,9 +11,12 @@ hold resources that have nothing to do with pdt.
 
 from __future__ import annotations
 
+import functools
 import json
 import os
+import shutil
 import subprocess
+import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -21,7 +24,8 @@ from dataclasses import dataclass, field
 # Each AWS call starts its own CLI process. Eight at a time keeps a 4-CPU CI
 # runner busy and no API sees more than eight calls at once; the AWS CLI retries
 # a throttled call. The Azure and Google Cloud CLIs do not support parallel
-# commands that share one config directory, so their listings stay serial.
+# commands that share one config directory, so each Azure call runs in its own
+# copy of it and the Google Cloud listing stays serial.
 PARALLEL_CALLS = 8
 CALLS = threading.BoundedSemaphore(PARALLEL_CALLS)
 MANAGED = {"managed-by": "pdt"}
@@ -90,9 +94,9 @@ def parallel(function, items) -> list:
         return list(pool.map(function, items))
 
 
-def run_json(command: list[str]):
+def run_json(command: list[str], env: dict[str, str] | None = None):
     with CALLS:
-        proc = subprocess.run(command, capture_output=True, text=True, check=False)
+        proc = subprocess.run(command, capture_output=True, text=True, check=False, env=env)
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout).strip()
         raise InventoryError(f"{' '.join(command[:4])} failed: {detail}")
@@ -104,7 +108,16 @@ def aws(region: str, *args: str):
 
 
 def az(*args: str):
-    return run_json(["pdt", "az", *args, "--output", "json"])
+    # https://learn.microsoft.com/cli/azure/use-azure-cli-successfully-tips
+    signed_in = os.environ.get("AZURE_CONFIG_DIR") or os.path.expanduser("~/.azure")
+    # A background telemetry upload or log cleanup of an earlier call can
+    # remove a file in those folders while it is copied.
+    with tempfile.TemporaryDirectory(prefix="pdt-verify-az-") as config:
+        shutil.copytree(signed_in, config, dirs_exist_ok=True,
+                        ignore=shutil.ignore_patterns("telemetry*", "commands", "logs"))
+        return run_json(["pdt", "az", *args, "--output", "json"],
+                        {**os.environ, "AZURE_CONFIG_DIR": config,
+                         "AZURE_CORE_COLLECT_TELEMETRY": "no"})
 
 
 def gcloud(*args: str):
@@ -146,17 +159,24 @@ def aws_caller_role(region: str) -> str:
 def aws_roles(region: str) -> Inventory:
     # The role this run signs in with may share the pdt- prefix, and it is
     # not something deploy made.
-    def resource(item) -> Resource:
-        listed = aws(region, "iam", "list-role-tags", "--role-name", item["RoleName"]) or {}
+    def resource(item) -> Resource | None:
+        try:
+            listed = aws(region, "iam", "list-role-tags", "--role-name", item["RoleName"]) or {}
+        except InventoryError as error:
+            # list-roles can still return a role that a destroy just deleted.
+            if "(NoSuchEntity)" not in str(error):
+                raise
+            return None
         tags = {tag["Key"]: tag["Value"] for tag in listed.get("Tags") or []}
         return Resource("iam role", item["Arn"], tags, item["RoleName"])
 
     own, roles = parallel(lambda read: read(), [
         lambda: aws_caller_role(region),
         lambda: (aws(region, "iam", "list-roles") or {}).get("Roles") or []])
-    return parallel(resource, [item for item in roles
-                               if item["RoleName"].startswith("pdt-")
-                               and item["RoleName"] != own])
+    found = parallel(resource, [item for item in roles
+                                if item["RoleName"].startswith("pdt-")
+                                and item["RoleName"] != own])
+    return [item for item in found if item is not None]
 
 
 def aws_log_groups(region: str) -> Inventory:
@@ -276,17 +296,29 @@ def aws_repositories(region: str) -> Inventory:
 def aws_tagged(region: str) -> Inventory:
     listed = aws(region, "resourcegroupstaggingapi", "get-resources",
                  "--tag-filters", "Key=managed-by,Values=pdt") or {}
-    found = []
-    for item in listed.get("ResourceTagMappingList") or []:
+
+    def resource(item) -> Resource | None:
         arn = item["ResourceARN"]
+        service = arn.split(":")[2]
         # ECS and Batch keep a deleted cluster, task definition, queue, or
         # job definition visible after deletion, and this API still returns
         # it. The ECS and Batch listings above decide those.
-        if arn.split(":")[2] in ("ecs", "batch"):
-            continue
+        if service in ("ecs", "batch"):
+            return None
+        # This API returns a deleted secret for up to about 30 seconds, and
+        # list-secrets can miss a new one, so describe-secret decides.
+        if service == "secretsmanager" and arn.split(":")[6].startswith("pdt-"):
+            try:
+                aws(region, "secretsmanager", "describe-secret", "--secret-id", arn)
+            except InventoryError as error:
+                if "(ResourceNotFoundException)" not in str(error):
+                    raise
+                return None
         tags = {tag["Key"]: tag["Value"] for tag in item.get("Tags") or []}
-        found.append(Resource(arn.split(":")[2], arn, tags, arn.rsplit("/", 1)[-1]))
-    return found
+        return Resource(service, arn, tags, arn.rsplit("/", 1)[-1])
+
+    found = parallel(resource, listed.get("ResourceTagMappingList") or [])
+    return [item for item in found if item is not None]
 
 
 AWS_SOURCES = (
@@ -318,22 +350,25 @@ def azure_deleted_vaults() -> Inventory:
     return found
 
 
+def azure_group(group_name: str) -> Inventory:
+    if az("group", "exists", "--name", group_name) is not True:
+        return []
+    group, items = parallel(lambda read: read(), [
+        lambda: az("group", "show", "--name", group_name),
+        lambda: az("resource", "list", "--resource-group", group_name) or []])
+    return [Resource("resource group", group["id"], group.get("tags") or {}, group["name"])] + [
+        Resource(item["type"], item["id"], item.get("tags") or {}, item["name"])
+        for item in items]
+
+
 def azure_inventory(settings: dict[str, str]) -> Inventory:
-    found = azure_deleted_vaults()
     # A named environment is the user's own, so its group is not pdt's to empty.
     groups = [settings["resource_group"]]
     if not settings["environment"]:
         groups.append(AZURE_SHARED_GROUP)
-    for group_name in groups:
-        if az("group", "exists", "--name", group_name) is not True:
-            continue
-        group = az("group", "show", "--name", group_name)
-        found.append(Resource("resource group", group["id"], group.get("tags") or {},
-                              group["name"]))
-        for item in az("resource", "list", "--resource-group", group_name) or []:
-            found.append(Resource(item["type"], item["id"], item.get("tags") or {},
-                                  item["name"]))
-    return found
+    listed = parallel(lambda read: read(), [
+        azure_deleted_vaults, *(functools.partial(azure_group, name) for name in groups)])
+    return [found for resources in listed for found in resources]
 
 
 def google_cloud_inventory(settings: dict[str, str]) -> Inventory:
