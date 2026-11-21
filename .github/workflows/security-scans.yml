@@ -39,7 +39,11 @@ jobs:
           done
           exit $status
 
+  # A new vulnerability in the base image or a new tool release does not come
+  # from a pull request, so these two jobs run only on the schedule and on a
+  # manual start, and do not fail an unrelated pull request.
   base-image:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     env:
       TRIVY_VERSION: 0.76.1
@@ -66,6 +70,7 @@ jobs:
           test ! -s "$RUNNER_TEMP/errors.txt"
 
   pinned-tools:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
