@@ -70,17 +70,44 @@ def test_a_role_tag_permission_error_still_fails(monkeypatch):
         inventory.aws_roles("us-east-1")
 
 
-def test_the_tagging_api_leaves_secrets_to_the_secret_listing(monkeypatch):
+def tagging(*names):
+    return {"ResourceTagMappingList": [
+        {"ResourceARN": f"arn:aws:{name}", "Tags": [{"Key": "managed-by", "Value": "pdt"}]}
+        for name in names]}
+
+
+def test_the_tagging_api_keeps_only_the_secrets_that_describe_secret_finds(monkeypatch):
+    described = []
+
     def aws(region, service, action, *args):
-        return {"ResourceTagMappingList": [
-            {"ResourceARN": f"arn:aws:{kind}:us-east-1:1:{name}",
-             "Tags": [{"Key": "managed-by", "Value": "pdt"}]}
-            for kind, name in (("secretsmanager", "secret:pdt-a-env-x1"),
-                               ("ecs", "cluster/pdt"),
-                               ("logs", "log-group:/pdt/a"))]}
+        if action == "get-resources":
+            return tagging("secretsmanager:us-east-1:1:secret:pdt-a-env-x1",
+                           "secretsmanager:us-east-1:1:secret:pdt-b-env-y2",
+                           "secretsmanager:us-east-1:1:secret:payroll-z3",
+                           "ecs:us-east-1:1:cluster/pdt",
+                           "logs:us-east-1:1:log-group:/pdt/a")
+        described.append(args[-1].rsplit(":", 1)[-1])
+        if args[-1].endswith("pdt-a-env-x1"):
+            raise inventory.InventoryError(
+                "An error occurred (ResourceNotFoundException) when calling DescribeSecret")
+        return {"Name": "pdt-b-env"}
 
     monkeypatch.setattr(inventory, "aws", aws)
-    assert [item.kind for item in inventory.aws_tagged("us-east-1")] == ["logs"]
+    found = inventory.aws_tagged("us-east-1")
+    assert [item.id.split(":", 6)[-1] for item in found] == [
+        "pdt-b-env-y2", "payroll-z3", "/pdt/a"]
+    assert sorted(described) == ["pdt-a-env-x1", "pdt-b-env-y2"]
+
+
+def test_a_describe_secret_permission_error_still_fails(monkeypatch):
+    def aws(region, service, action, *args):
+        if action == "get-resources":
+            return tagging("secretsmanager:us-east-1:1:secret:pdt-a-env-x1")
+        raise inventory.InventoryError("An error occurred (AccessDeniedException)")
+
+    monkeypatch.setattr(inventory, "aws", aws)
+    with pytest.raises(inventory.InventoryError, match="AccessDeniedException"):
+        inventory.aws_tagged("us-east-1")
 
 
 def test_batch_listings_keep_pdt_resources_and_skip_a_deleted_queue(monkeypatch):

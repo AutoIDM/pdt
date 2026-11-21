@@ -296,18 +296,29 @@ def aws_repositories(region: str) -> Inventory:
 def aws_tagged(region: str) -> Inventory:
     listed = aws(region, "resourcegroupstaggingapi", "get-resources",
                  "--tag-filters", "Key=managed-by,Values=pdt") or {}
-    found = []
-    for item in listed.get("ResourceTagMappingList") or []:
+
+    def resource(item) -> Resource | None:
         arn = item["ResourceARN"]
+        service = arn.split(":")[2]
         # ECS and Batch keep a deleted cluster, task definition, queue, or
         # job definition visible after deletion, and this API still returns
-        # it; it also returns a deleted secret for up to about 30 seconds.
-        # The ECS, Batch, and secret listings above decide those.
-        if arn.split(":")[2] in ("ecs", "batch", "secretsmanager"):
-            continue
+        # it. The ECS and Batch listings above decide those.
+        if service in ("ecs", "batch"):
+            return None
+        # This API returns a deleted secret for up to about 30 seconds, and
+        # list-secrets can miss a new one, so describe-secret decides.
+        if service == "secretsmanager" and arn.split(":")[6].startswith("pdt-"):
+            try:
+                aws(region, "secretsmanager", "describe-secret", "--secret-id", arn)
+            except InventoryError as error:
+                if "(ResourceNotFoundException)" not in str(error):
+                    raise
+                return None
         tags = {tag["Key"]: tag["Value"] for tag in item.get("Tags") or []}
-        found.append(Resource(arn.split(":")[2], arn, tags, arn.rsplit("/", 1)[-1]))
-    return found
+        return Resource(service, arn, tags, arn.rsplit("/", 1)[-1])
+
+    found = parallel(resource, listed.get("ResourceTagMappingList") or [])
+    return [item for item in found if item is not None]
 
 
 AWS_SOURCES = (
