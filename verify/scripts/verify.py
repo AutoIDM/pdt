@@ -170,11 +170,14 @@ def record(steps, report, name, problems):
 
 def scenario(steps, apps, run_pdt, inventory, report, wait, baseline):
     def checks(*named):
-        """Wait until every check passes, then record each one in order until one fails."""
-        resources = wait(inventory, lambda found: [problem for _, checker in named
-                                                   for problem in checker(found)])
-        return all(record(steps, report, name, checker(resources))
-                   for name, checker in named)
+        """Record each check in order until one fails; a check re-reads only when the last listing fails it."""
+        resources = None
+        for name, checker in named:
+            if resources is None or checker(resources):
+                resources = wait(inventory, checker)
+            if not record(steps, report, name, checker(resources)):
+                return False
+        return True
 
     def command(*args):
         code = run_pdt(*args)

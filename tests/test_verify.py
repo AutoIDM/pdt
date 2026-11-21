@@ -334,6 +334,30 @@ def test_checks_on_the_same_state_share_one_read():
                           ("destroy", "app-one"), ("destroy", "app-two")]
 
 
+def test_each_check_waits_its_own_deadline():
+    cloud = FakeCloud()
+    clock = [0.0]
+    after_destroy = []
+
+    def inventory():
+        clock[0] += 100
+        listed = cloud.inventory()
+        if not cloud.calls or cloud.calls[-1] != ("destroy", "app-one"):
+            return listed
+        after_destroy.append(1)
+        if len(after_destroy) == 1:
+            listed.append(Resource("job", "pdt-app-one", tagged(), "pdt-app-one"))
+        if len(after_destroy) <= 2:
+            listed = [resource for resource in listed if resource.id != "pdt-app-two"]
+        return listed
+
+    steps = verify(cloud.apps, cloud.run_pdt, inventory, report=lambda step: None,
+                   wait=lambda listing, check: wait_for(listing, check, sleep=lambda _: None,
+                                                        clock=lambda: clock[0]))
+    assert failed(steps) == []
+    assert len(after_destroy) == 3
+
+
 def test_the_last_destroy_waits_until_the_listing_catches_up():
     cloud = FakeCloud()
     registry = Resource("registry", "pdt-registry", tagged(), "pdt-registry")
@@ -349,7 +373,7 @@ def test_the_last_destroy_waits_until_the_listing_catches_up():
                    wait=lambda listing, check: wait_for(listing, check, sleep=slept.append,
                                                         clock=lambda: 0.0))
     assert failed(steps) == []
-    assert slept == [10, 10]
+    assert slept == [10]
 
 
 def test_the_junit_report_holds_one_testcase_per_step(tmp_path):
@@ -410,18 +434,20 @@ def test_each_azure_call_runs_in_its_own_copy_of_the_signed_in_folder(monkeypatc
     signed_in = tmp_path / "azure"
     signed_in.mkdir()
     (signed_in / "azureProfile.json").write_text("{}")
+    (signed_in / "telemetry").mkdir()
+    (signed_in / "commands").mkdir()
     monkeypatch.setenv("AZURE_CONFIG_DIR", str(signed_in))
     folders = []
 
     def run(command, env, **kwargs):
         folder = env["AZURE_CONFIG_DIR"]
-        folders.append((folder, (Path(folder) / "azureProfile.json").read_text()))
+        folders.append((folder, sorted(path.name for path in Path(folder).iterdir())))
         return subprocess.CompletedProcess(command, 0, "[]", "")
 
     monkeypatch.setattr(inventory.subprocess, "run", run)
     inventory.az("group", "list")
     inventory.az("group", "list")
-    assert [text for _, text in folders] == ["{}", "{}"]
+    assert [names for _, names in folders] == [["azureProfile.json"], ["azureProfile.json"]]
     assert len({folder for folder, _ in folders} | {str(signed_in)}) == 3
     assert not any(Path(folder).exists() for folder, _ in folders)
 

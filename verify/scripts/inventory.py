@@ -110,10 +110,14 @@ def aws(region: str, *args: str):
 def az(*args: str):
     # https://learn.microsoft.com/cli/azure/use-azure-cli-successfully-tips
     signed_in = os.environ.get("AZURE_CONFIG_DIR") or os.path.expanduser("~/.azure")
+    # A background telemetry upload or log cleanup of an earlier call can
+    # remove a file in those folders while it is copied.
     with tempfile.TemporaryDirectory(prefix="pdt-verify-az-") as config:
-        shutil.copytree(signed_in, config, dirs_exist_ok=True)
+        shutil.copytree(signed_in, config, dirs_exist_ok=True,
+                        ignore=shutil.ignore_patterns("telemetry*", "commands", "logs"))
         return run_json(["pdt", "az", *args, "--output", "json"],
-                        {**os.environ, "AZURE_CONFIG_DIR": config})
+                        {**os.environ, "AZURE_CONFIG_DIR": config,
+                         "AZURE_CORE_COLLECT_TELEMETRY": "no"})
 
 
 def gcloud(*args: str):
