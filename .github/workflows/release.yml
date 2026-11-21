@@ -173,7 +173,9 @@ jobs:
       id-token: write
       attestations: write
     env:
-      MSI: pdt-windows-x64-${{ needs.windows-launcher.outputs.version }}.msi
+      # The README links to releases/latest/download/pdt-windows-x64.msi, so the
+      # file name has no version.
+      MSI: pdt-windows-x64.msi
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
