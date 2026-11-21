@@ -460,6 +460,7 @@ def test_each_azure_call_runs_in_its_own_copy_of_the_signed_in_folder(monkeypatc
     for name in ("telemetry", "commands", "logs"):
         (signed_in / name).mkdir()
     monkeypatch.setenv("AZURE_CONFIG_DIR", str(signed_in))
+    monkeypatch.setenv("AZURE_CORE_COLLECT_TELEMETRY", "yes")
     folders = []
 
     def run(command, env, **kwargs):
