@@ -159,17 +159,24 @@ def aws_caller_role(region: str) -> str:
 def aws_roles(region: str) -> Inventory:
     # The role this run signs in with may share the pdt- prefix, and it is
     # not something deploy made.
-    def resource(item) -> Resource:
-        listed = aws(region, "iam", "list-role-tags", "--role-name", item["RoleName"]) or {}
+    def resource(item) -> Resource | None:
+        try:
+            listed = aws(region, "iam", "list-role-tags", "--role-name", item["RoleName"]) or {}
+        except InventoryError as error:
+            # list-roles can still return a role that a destroy just deleted.
+            if "(NoSuchEntity)" not in str(error):
+                raise
+            return None
         tags = {tag["Key"]: tag["Value"] for tag in listed.get("Tags") or []}
         return Resource("iam role", item["Arn"], tags, item["RoleName"])
 
     own, roles = parallel(lambda read: read(), [
         lambda: aws_caller_role(region),
         lambda: (aws(region, "iam", "list-roles") or {}).get("Roles") or []])
-    return parallel(resource, [item for item in roles
-                               if item["RoleName"].startswith("pdt-")
-                               and item["RoleName"] != own])
+    found = parallel(resource, [item for item in roles
+                                if item["RoleName"].startswith("pdt-")
+                                and item["RoleName"] != own])
+    return [item for item in found if item is not None]
 
 
 def aws_log_groups(region: str) -> Inventory:
@@ -294,8 +301,9 @@ def aws_tagged(region: str) -> Inventory:
         arn = item["ResourceARN"]
         # ECS and Batch keep a deleted cluster, task definition, queue, or
         # job definition visible after deletion, and this API still returns
-        # it. The ECS and Batch listings above decide those.
-        if arn.split(":")[2] in ("ecs", "batch"):
+        # it; it also returns a deleted secret for up to about 30 seconds.
+        # The ECS, Batch, and secret listings above decide those.
+        if arn.split(":")[2] in ("ecs", "batch", "secretsmanager"):
             continue
         tags = {tag["Key"]: tag["Value"] for tag in item.get("Tags") or []}
         found.append(Resource(arn.split(":")[2], arn, tags, arn.rsplit("/", 1)[-1]))

@@ -24,9 +24,9 @@ def test_a_deleted_schedule_group_is_rechecked_until_it_disappears(monkeypatch, 
         return {"Tags": [{"Key": "managed-by", "Value": "pdt"}]}
 
     monkeypatch.setattr(inventory, "aws", aws)
-    problems = wait_for(lambda: inventory.aws_schedules("us-east-1"), baseline_check(frozenset()),
-                        sleep=slept.append, clock=lambda: 0)
-    assert problems == []
+    resources = wait_for(lambda: inventory.aws_schedules("us-east-1"), baseline_check(frozenset()),
+                         sleep=slept.append, clock=lambda: 0)
+    assert resources == []
     assert slept == [10]
 
 
@@ -39,6 +39,48 @@ def test_a_schedule_listing_permission_error_still_fails(monkeypatch):
     monkeypatch.setattr(inventory, "aws", aws)
     with pytest.raises(inventory.InventoryError, match="AccessDeniedException"):
         inventory.aws_schedules("us-east-1")
+
+
+def test_a_role_deleted_after_list_roles_is_left_out(monkeypatch):
+    def aws(region, service, action, *args):
+        if action == "get-caller-identity":
+            return {"Arn": "arn:aws:sts::1:assumed-role/pdt-verify/run"}
+        if action == "list-roles":
+            return {"Roles": [{"RoleName": "pdt-a-job", "Arn": "arn:role/pdt-a-job"},
+                              {"RoleName": "pdt-b-job", "Arn": "arn:role/pdt-b-job"}]}
+        if args[-1] == "pdt-a-job":
+            raise inventory.InventoryError(
+                "An error occurred (NoSuchEntity) when calling the ListRoleTags operation")
+        return {"Tags": [{"Key": "managed-by", "Value": "pdt"}]}
+
+    monkeypatch.setattr(inventory, "aws", aws)
+    assert [item.name for item in inventory.aws_roles("us-east-1")] == ["pdt-b-job"]
+
+
+def test_a_role_tag_permission_error_still_fails(monkeypatch):
+    def aws(region, service, action, *args):
+        if action == "get-caller-identity":
+            return {}
+        if action == "list-roles":
+            return {"Roles": [{"RoleName": "pdt-a-job", "Arn": "arn:role/pdt-a-job"}]}
+        raise inventory.InventoryError("An error occurred (AccessDenied)")
+
+    monkeypatch.setattr(inventory, "aws", aws)
+    with pytest.raises(inventory.InventoryError, match="AccessDenied"):
+        inventory.aws_roles("us-east-1")
+
+
+def test_the_tagging_api_leaves_secrets_to_the_secret_listing(monkeypatch):
+    def aws(region, service, action, *args):
+        return {"ResourceTagMappingList": [
+            {"ResourceARN": f"arn:aws:{kind}:us-east-1:1:{name}",
+             "Tags": [{"Key": "managed-by", "Value": "pdt"}]}
+            for kind, name in (("secretsmanager", "secret:pdt-a-env-x1"),
+                               ("ecs", "cluster/pdt"),
+                               ("logs", "log-group:/pdt/a"))]}
+
+    monkeypatch.setattr(inventory, "aws", aws)
+    assert [item.kind for item in inventory.aws_tagged("us-east-1")] == ["logs"]
 
 
 def test_batch_listings_keep_pdt_resources_and_skip_a_deleted_queue(monkeypatch):
