@@ -540,7 +540,7 @@ def test_a_ci_run_merges_only_the_pr_with_its_head_and_scores_nothing(monkeypatc
     comments = {1: scored(docs, "simple"), 2: scored(docs, "simple")}
     items, err, calls, fetches = run_select(monkeypatch, capsys, prs, comments)
     assert items == [] and fetches == []
-    assert "ci completed on sha2: trying the merge of its PR only" in err
+    assert "merge attempt for head sha2: looking at its PR only" in err
     assert "merged      #2" in err
     writes = [(m, p) for m, p, _ in calls if m in ("PUT", "POST", "DELETE") and p != "/graphql"]
     assert writes == [("PUT", f"/repos/{FULL_NAME}/pulls/2/merge"),
@@ -571,6 +571,22 @@ def test_a_ci_run_on_a_commit_no_open_pr_has_lists_nothing(monkeypatch, capsys):
     assert "no open PR of this repository has that head" in err
     assert [p for _, p, _ in calls] == [
         "/user", f"/repos/{FULL_NAME}/pulls?state=open&base=main&per_page=100"]
+
+
+def test_a_ci_run_skips_a_pr_whose_head_moved_since_the_list(monkeypatch, capsys):
+    arm(monkeypatch)
+    monkeypatch.setenv("HEAD_SHA", "sha1")
+    moved = pr(1, head={"ref": "branch-1", "sha": "sha2", "repo": {"full_name": FULL_NAME}})
+    calls = install(monkeypatch, [
+        (("GET", "/user"), {"login": "pdt-bot"}),
+        (("GET", "/pulls?state=open"), [pr(1)]),
+        (("GET", "/pulls/1"), moved),
+    ])
+    assert select.main() == 0
+    out, err = capsys.readouterr()
+    assert json.loads(out) == []
+    assert "moved       #1" in err and "head is now sha2" in err
+    assert calls[-1][:2] == ("GET", f"/repos/{FULL_NAME}/pulls/1")
 
 
 # --- check hook end to end ----------------------------------------------------
@@ -736,3 +752,13 @@ def test_a_successful_ci_run_of_a_pr_from_this_repository_starts_a_merge_attempt
     assert checkout["uses"].startswith("actions/checkout@")
     assert "default_branch" in checkout["with"]["ref"], "never run code from the PR"
     assert merge["run"] == "python3 ci/claude-tasks/score-prs/select_prs.py"
+
+
+def test_a_pull_request_run_tries_the_merge_after_it_scores():
+    steps = workflow("score-prs.yml")["jobs"][select.OWN_CHECK]["steps"]
+    names = [step.get("name") for step in steps]
+    after = steps[names.index("Score pull requests") + 1]
+    assert after["name"] == "Try the merge of the scored pull request"
+    assert after["if"] == "github.event_name == 'pull_request'"
+    assert after["env"] == {"HEAD_SHA": "${{ github.event.pull_request.head.sha }}"}
+    assert after["run"] == "python3 ci/claude-tasks/score-prs/select_prs.py"
