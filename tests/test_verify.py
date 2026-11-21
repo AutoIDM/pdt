@@ -1,4 +1,5 @@
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 from inventory import Resource, classify
 from verify import junit_tree, verify, wait_for, write_report
@@ -65,7 +66,7 @@ class FakeCloud:
 
 
 def now(inventory, check):
-    return check(inventory())
+    return inventory()
 
 
 def run(cloud):
@@ -302,21 +303,53 @@ def test_wait_for_retries_until_the_listing_catches_up():
     slept = []
     clock = iter([0.0, 0.0, 10.0, 10.0])
 
-    problems = wait_for(lambda: readings.pop(0),
-                        lambda resources: [item.id for item in resources],
-                        sleep=slept.append, clock=lambda: next(clock))
-    assert problems == []
+    resources = wait_for(lambda: readings.pop(0),
+                         lambda resources: [item.id for item in resources],
+                         sleep=slept.append, clock=lambda: next(clock))
+    assert resources == []
     assert slept == [10]
 
 
 def test_wait_for_gives_up_at_the_deadline():
     slept = []
     clock = iter([0.0, 1000.0])
-    problems = wait_for(lambda: [Resource("job", "pdt-app-one", tagged())],
-                        lambda resources: [item.id for item in resources],
-                        sleep=slept.append, clock=lambda: next(clock))
-    assert problems == ["pdt-app-one"]
+    resources = wait_for(lambda: [Resource("job", "pdt-app-one", tagged())],
+                         lambda resources: [item.id for item in resources],
+                         sleep=slept.append, clock=lambda: next(clock))
+    assert [item.id for item in resources] == ["pdt-app-one"]
     assert slept == []
+
+
+def test_checks_on_the_same_state_share_one_read():
+    cloud = FakeCloud()
+    read_after = []
+
+    def inventory():
+        read_after.append(cloud.calls[-1] if cloud.calls else None)
+        return cloud.inventory()
+
+    steps = verify(cloud.apps, cloud.run_pdt, inventory, report=lambda step: None, wait=now)
+    assert failed(steps) == []
+    assert read_after == [None, ("destroy", "app-two"), ("runs", "app-two"),
+                          ("destroy", "app-one"), ("destroy", "app-two")]
+
+
+def test_the_last_destroy_waits_until_the_listing_catches_up():
+    cloud = FakeCloud()
+    registry = Resource("registry", "pdt-registry", tagged(), "pdt-registry")
+    late = [registry, registry]
+
+    def inventory():
+        if len(cloud.calls) > 2 and cloud.calls[-1] == ("destroy", "app-two") and late:
+            return cloud.inventory() + [late.pop()]
+        return cloud.inventory()
+
+    slept = []
+    steps = verify(cloud.apps, cloud.run_pdt, inventory, report=lambda step: None,
+                   wait=lambda listing, check: wait_for(listing, check, sleep=slept.append,
+                                                        clock=lambda: 0.0))
+    assert failed(steps) == []
+    assert slept == [10, 10]
 
 
 def test_the_junit_report_holds_one_testcase_per_step(tmp_path):
@@ -367,6 +400,30 @@ def test_the_azure_inventory_covers_the_shared_environment_group(monkeypatch):
     found = inventory.azure_inventory(
         {"resource_group": "pdt-verify", "environment": "pdt-shared/pdt-eastus2"})
     assert [resource.name for resource in found] == ["pdt-verify", "pdt-app-one"]
+
+
+def test_each_azure_call_runs_in_its_own_copy_of_the_signed_in_folder(monkeypatch, tmp_path):
+    import subprocess
+
+    import inventory
+
+    signed_in = tmp_path / "azure"
+    signed_in.mkdir()
+    (signed_in / "azureProfile.json").write_text("{}")
+    monkeypatch.setenv("AZURE_CONFIG_DIR", str(signed_in))
+    folders = []
+
+    def run(command, env, **kwargs):
+        folder = env["AZURE_CONFIG_DIR"]
+        folders.append((folder, (Path(folder) / "azureProfile.json").read_text()))
+        return subprocess.CompletedProcess(command, 0, "[]", "")
+
+    monkeypatch.setattr(inventory.subprocess, "run", run)
+    inventory.az("group", "list")
+    inventory.az("group", "list")
+    assert [text for _, text in folders] == ["{}", "{}"]
+    assert len({folder for folder, _ in folders} | {str(signed_in)}) == 3
+    assert not any(Path(folder).exists() for folder, _ in folders)
 
 
 def test_a_retained_data_store_is_left_out_of_every_listing():

@@ -11,9 +11,12 @@ hold resources that have nothing to do with pdt.
 
 from __future__ import annotations
 
+import functools
 import json
 import os
+import shutil
 import subprocess
+import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -21,7 +24,8 @@ from dataclasses import dataclass, field
 # Each AWS call starts its own CLI process. Eight at a time keeps a 4-CPU CI
 # runner busy and no API sees more than eight calls at once; the AWS CLI retries
 # a throttled call. The Azure and Google Cloud CLIs do not support parallel
-# commands that share one config directory, so their listings stay serial.
+# commands that share one config directory, so each Azure call runs in its own
+# copy of it and the Google Cloud listing stays serial.
 PARALLEL_CALLS = 8
 CALLS = threading.BoundedSemaphore(PARALLEL_CALLS)
 MANAGED = {"managed-by": "pdt"}
@@ -90,9 +94,9 @@ def parallel(function, items) -> list:
         return list(pool.map(function, items))
 
 
-def run_json(command: list[str]):
+def run_json(command: list[str], env: dict[str, str] | None = None):
     with CALLS:
-        proc = subprocess.run(command, capture_output=True, text=True, check=False)
+        proc = subprocess.run(command, capture_output=True, text=True, check=False, env=env)
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout).strip()
         raise InventoryError(f"{' '.join(command[:4])} failed: {detail}")
@@ -104,7 +108,12 @@ def aws(region: str, *args: str):
 
 
 def az(*args: str):
-    return run_json(["pdt", "az", *args, "--output", "json"])
+    # https://learn.microsoft.com/cli/azure/use-azure-cli-successfully-tips
+    signed_in = os.environ.get("AZURE_CONFIG_DIR") or os.path.expanduser("~/.azure")
+    with tempfile.TemporaryDirectory(prefix="pdt-verify-az-") as config:
+        shutil.copytree(signed_in, config, dirs_exist_ok=True)
+        return run_json(["pdt", "az", *args, "--output", "json"],
+                        {**os.environ, "AZURE_CONFIG_DIR": config})
 
 
 def gcloud(*args: str):
@@ -318,22 +327,25 @@ def azure_deleted_vaults() -> Inventory:
     return found
 
 
+def azure_group(group_name: str) -> Inventory:
+    if az("group", "exists", "--name", group_name) is not True:
+        return []
+    group, items = parallel(lambda read: read(), [
+        lambda: az("group", "show", "--name", group_name),
+        lambda: az("resource", "list", "--resource-group", group_name) or []])
+    return [Resource("resource group", group["id"], group.get("tags") or {}, group["name"])] + [
+        Resource(item["type"], item["id"], item.get("tags") or {}, item["name"])
+        for item in items]
+
+
 def azure_inventory(settings: dict[str, str]) -> Inventory:
-    found = azure_deleted_vaults()
     # A named environment is the user's own, so its group is not pdt's to empty.
     groups = [settings["resource_group"]]
     if not settings["environment"]:
         groups.append(AZURE_SHARED_GROUP)
-    for group_name in groups:
-        if az("group", "exists", "--name", group_name) is not True:
-            continue
-        group = az("group", "show", "--name", group_name)
-        found.append(Resource("resource group", group["id"], group.get("tags") or {},
-                              group["name"]))
-        for item in az("resource", "list", "--resource-group", group_name) or []:
-            found.append(Resource(item["type"], item["id"], item.get("tags") or {},
-                                  item["name"]))
-    return found
+    listed = parallel(lambda read: read(), [
+        azure_deleted_vaults, *(functools.partial(azure_group, name) for name in groups)])
+    return [found for resources in listed for found in resources]
 
 
 def google_cloud_inventory(settings: dict[str, str]) -> Inventory:

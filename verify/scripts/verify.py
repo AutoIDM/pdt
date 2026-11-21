@@ -42,12 +42,15 @@ class Step:
 
 
 def wait_for(inventory, check, sleep=time.sleep, clock=time.monotonic):
-    """Re-read the account until its listing catches up with the deletions."""
+    """Re-read the account until its listing catches up with the deletions.
+
+    Returns the last listing, so every check on the same state reads it once.
+    """
     deadline = clock() + DEADLINE_SECONDS
     while True:
-        problems = check(inventory())
-        if not problems or clock() >= deadline:
-            return problems
+        resources = inventory()
+        if not check(resources) or clock() >= deadline:
+            return resources
         sleep(POLL_SECONDS)
 
 
@@ -166,8 +169,12 @@ def record(steps, report, name, problems):
 
 
 def scenario(steps, apps, run_pdt, inventory, report, wait, baseline):
-    def check(name, checker):
-        return record(steps, report, name, wait(inventory, checker))
+    def checks(*named):
+        """Wait until every check passes, then record each one in order until one fails."""
+        resources = wait(inventory, lambda found: [problem for _, checker in named
+                                                   for problem in checker(found)])
+        return all(record(steps, report, name, checker(resources))
+                   for name, checker in named)
 
     def command(*args):
         code = run_pdt(*args)
@@ -181,22 +188,27 @@ def scenario(steps, apps, run_pdt, inventory, report, wait, baseline):
     for app in apps:
         if not command("health", app) or not command("runs", app):
             return
-    if not check("every resource is tagged", untagged_check(apps, baseline)):
+    tagged = untagged_check(apps, baseline)
+    resources = wait(inventory, tagged)
+    if not record(steps, report, "every resource is tagged", tagged(resources)):
         return
     owned, shared = ownership(
-        [resource for resource in inventory() if resource.id not in baseline], apps)
+        [resource for resource in resources if resource.id not in baseline], apps)
     if not record(steps, report, "every resource has an owner",
                   owner_problems(owned, apps)):
         return
     for index, app in enumerate(apps):
         if not command("destroy", app, "--yes"):
             return
-        if not check(f"{app} resources are gone", gone_check(owned[app])):
+        remaining = apps[index + 1:]
+        named = [(f"{app} resources are gone", gone_check(owned[app])),
+                 (f"other apps are untouched after destroy {app}",
+                  untouched_check(owned, shared, remaining, baseline))]
+        if not remaining:
+            named.append(("account holds what it held before deploy",
+                          baseline_check(baseline)))
+        if not checks(*named):
             return
-        if not check(f"other apps are untouched after destroy {app}",
-                     untouched_check(owned, shared, apps[index + 1:], baseline)):
-            return
-    check("account holds what it held before deploy", baseline_check(baseline))
 
 
 def verify(apps, run_pdt, inventory, report=print_step, wait=wait_for):
@@ -206,11 +218,12 @@ def verify(apps, run_pdt, inventory, report=print_step, wait=wait_for):
         try:
             if not clear_leftovers(steps, apps, run_pdt, inventory, report):
                 return steps
-            problems = wait(inventory, leftover_check(apps))
+            leftovers = leftover_check(apps)
+            resources = wait(inventory, leftovers)
             if not record(steps, report, "no resource of these apps exists before deploy",
-                          problems):
+                          leftovers(resources)):
                 return steps
-            baseline = frozenset(resource.id for resource in inventory())
+            baseline = frozenset(resource.id for resource in resources)
             cleanup = True
             scenario(steps, apps, run_pdt, inventory, report, wait, baseline)
         except Exception as exc:
