@@ -20,10 +20,17 @@ def test_a_folder_name_is_an_app_name(name):
     assert config.app_name_problem(name) == ""
 
 
-@pytest.mark.parametrize("name", ["..", "a/b", "a\\b", "../x", "", "."])
-def test_a_path_is_not_an_app_name(name):
+@pytest.mark.parametrize("name", ["..", "a/b", "a\\b", "../x", "", ".",
+                                  "*", "a?b", "${aws:username}", "a{b", "a}b"])
+def test_a_path_or_a_pattern_is_not_an_app_name(name):
     assert config.app_name_problem(name) == (
-        f"{name!r} is not an app name; use one folder name with no path separators")
+        f"{name!r} is not an app name; use one folder name with no path separators "
+        "and none of * ? $ { }")
+
+
+def test_merged_app_rejects_a_name_like_a_pattern(nested_project):
+    with pytest.raises(ConfigError, match="is not an app name"):
+        config.merged_app("*")
 
 
 def test_merged_app_rejects_a_name_outside_the_project(nested_project):
