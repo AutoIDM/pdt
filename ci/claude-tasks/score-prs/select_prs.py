@@ -27,7 +27,9 @@ can run ``git diff origin/<base>...origin/<branch>`` without fetching.
 
 A run the pull_request event started sets PR_NUMBER and looks at that PR
 alone. A schedule or manual run sweeps every open PR, which also picks up a
-changed diff.
+changed diff. A completed ``ci`` run sets HEAD_SHA: that run tries the merge
+of the open PR with that head commit and nothing else, so it scores nothing,
+fetches no branch, and lists no item for Claude.
 
 Environment:
   GH_TOKEN         token with contents and pull-requests write. A merge made
@@ -36,6 +38,7 @@ Environment:
   DRY_RUN          anything but the exact word ``false`` means list and change
                    nothing.
   PR_NUMBER        the PR of a pull_request event. Absent on a sweep.
+  HEAD_SHA         the head commit of a completed ``ci`` run. Absent otherwise.
   DEFAULT_BRANCH   the branch a PR must target; ``main`` when unset.
   GITHUB_REPOSITORY, GITHUB_API_URL, GITHUB_GRAPHQL_URL   set by GitHub Actions.
 
@@ -487,24 +490,35 @@ def main() -> int:
         prs = [pr for pr in prs if str(pr["number"]) == event_number]
         log(f"pull_request event for #{event_number}: looking at that PR only"
             + ("" if prs else " (it is not an open PR of this repository)"))
+    head_sha = env.get("HEAD_SHA", "").strip()
+    if head_sha:
+        prs = [pr for pr in prs if pr["head"]["sha"] == head_sha]
+        log(f"merge attempt for head {head_sha}: looking at its PR only"
+            + ("" if prs else " (no open PR of this repository has that head)"))
     for pr in prs:
         if not same_repo(pr):
             log(f"  fork        #{pr['number']} {pr['title']} (skipped: comes from a fork)")
     prs = [pr for pr in prs if same_repo(pr)]
     log(f"{len(prs)} open PR(s) targeting {base} qualify"
         + (" (dry run: nothing is merged)" if dry_run else ""))
-    if prs:
+    if prs and not head_sha:
         fetch_branches([base, *(pr["head"]["ref"] for pr in prs)])
 
     items = []
     for listed in prs:
         pr = get_pr(env, listed["number"])
         number, title = pr["number"], pr["title"]
+        if head_sha and pr["head"]["sha"] != head_sha:
+            log(f"  moved       #{number} {title} (head is now {pr['head']['sha']})")
+            continue
         files = list_files(env, number)
         did = diff_id(files)
         floor, reasons = rule_floor(pr, files)
         previous = previous_score(list_comments(env, number), login)
         if not already_scored(pr, previous, did):
+            if head_sha:
+                log(f"  not scored  #{number} {title} (a scoring run scores it first)")
+                continue
             log(f"  score       #{number} {title} (floor {floor}: {'; '.join(reasons)})")
             items.append(item_for(pr, did, floor, reasons, files, previous))
             continue
