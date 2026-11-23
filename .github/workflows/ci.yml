@@ -34,13 +34,20 @@ jobs:
             python: "3.15"
           - os: windows-latest
             python: "3.12"
+            files: a-d
+          - os: windows-latest
+            python: "3.12"
+            files: e-z
+    env:
+      UV_COMPILE_BYTECODE: ${{ matrix.os == 'windows-latest' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
-      - run: uv run --python ${{ matrix.python }} --group dev pytest -q -m ""
+          python-version: ${{ matrix.python }}
+      - run: uv run --python ${{ matrix.python }} --group dev pytest -q -m "" ${{ matrix.files && format('--ignore-glob=*/test_{0}*', matrix.files == 'a-d' && '[!a-d]' || '[a-d]') || '' }}
 
   # macOS runners often wait many minutes for a machine, so a pull request
   # does not wait for this job.
@@ -53,6 +60,7 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
+          python-version: "3.13"
       - run: uv run --python 3.13 --group dev pytest -q -m ""
 
   # tests/ needs no network, so this job downloads the IntuneManagement that
@@ -98,6 +106,7 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
+          python-version: "3.13"
       - if: steps.changes.outputs.run == 'true'
         run: uv run --python 3.13 --group dev pytest -q -m "" tests/test_intune_export.py
         env:
