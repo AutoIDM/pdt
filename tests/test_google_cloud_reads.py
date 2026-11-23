@@ -329,13 +329,17 @@ def job_plan(project, monkeypatch, read, values=None):
 def test_the_plan_reads_the_resources_at_the_same_time(project, monkeypatch):
     lock = threading.Lock()
     running = [0]
-    most = [0]
+    five = threading.Event()
+    deadline = time.monotonic() + 10
 
     def read(url, data=None):
         with lock:
             running[0] += 1
-            most[0] = max(most[0], running[0])
-        time.sleep(0.05)
+            if running[0] == 5:
+                five.set()
+        # Each read waits for five reads at once, so a busy computer that starts a thread
+        # late cannot end the first read before the fifth starts.
+        five.wait(max(0, deadline - time.monotonic()))
         with lock:
             running[0] -= 1
         return {"accounts": []} if "/serviceAccounts" in url else None
@@ -343,7 +347,7 @@ def test_the_plan_reads_the_resources_at_the_same_time(project, monkeypatch):
     app = job_plan(project, monkeypatch, read, {"TOKEN": "secret"})
     monkeypatch.setattr(gc, "run_quiet", lambda *args, **kwargs: pytest.fail(args))
     assert gc.deploy(app, True, plan_only=True) == 0
-    assert most[0] >= 5
+    assert five.is_set()
 
 
 def test_the_first_check_in_order_names_the_problem(project, monkeypatch, capsys):
