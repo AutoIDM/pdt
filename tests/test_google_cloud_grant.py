@@ -14,7 +14,7 @@ def script_calls(tmp_path) -> list[str]:
     harness.write_text(
         'gcloud() { case "$1 $2" in "projects describe") echo 123456789012 ;; *) case " $* " in\n'
         '  *" describe "*) return 1 ;; esac; echo "$*" ;; esac; }\n'
-        "PDT_PROJECT=my-project PDT_EXTERNAL_ID=0123 PDT_AWS_ACCOUNT=1 PDT_AWS_ROLE=r\n"
+        f"PDT_PROJECT=my-project PDT_EXTERNAL_ID={'0' * 32} PDT_AWS_ACCOUNT=123456789012 PDT_AWS_ROLE=r\n"
         + grant_templates.google_script())
     proc = subprocess.run(["bash", str(harness)], capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr

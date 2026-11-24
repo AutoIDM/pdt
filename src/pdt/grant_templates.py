@@ -252,6 +252,13 @@ set -euo pipefail
 : "${{PDT_EXTERNAL_ID:?set PDT_EXTERNAL_ID to the external ID of your AutoIDM customer}}"
 : "${{PDT_AWS_ACCOUNT:?set PDT_AWS_ACCOUNT to the AWS account of AutoIDM}}"
 : "${{PDT_AWS_ROLE:?set PDT_AWS_ROLE to the name of the AutoIDM credential role}}"
+check() {{
+  [[ "$2" =~ $3 ]] || {{ echo "$1 is not $4: $2" >&2; exit 1; }}
+}}
+check PDT_PROJECT "$PDT_PROJECT" '^[a-z][a-z0-9-]{{4,28}}[a-z0-9]$' "a Google Cloud project ID"
+check PDT_EXTERNAL_ID "$PDT_EXTERNAL_ID" '^[0-9a-f]{{32}}$' "an external ID of 32 hex digits"
+check PDT_AWS_ACCOUNT "$PDT_AWS_ACCOUNT" '^[0-9]{{12}}$' "an AWS account of 12 digits"
+check PDT_AWS_ROLE "$PDT_AWS_ROLE" '^[A-Za-z0-9+=,.@_-]{{1,64}}$' "an AWS IAM role name"
 NUMBER="$(gcloud projects describe "$PDT_PROJECT" --format='value(projectNumber)')"
 ACCOUNT="{name}@$PDT_PROJECT.iam.gserviceaccount.com"
 RUNNER="{runner}@$PDT_PROJECT.iam.gserviceaccount.com"
@@ -290,7 +297,7 @@ custom_role() {{
   fi
 }}
 {custom}
-for role in {roles}; do
+for role in {" ".join(f'"{role}"' for role in roles.split())}; do
   gcloud projects add-iam-policy-binding "$PDT_PROJECT" --member "serviceAccount:$ACCOUNT" \\
     --role "$role" --condition=None --format=none
 done

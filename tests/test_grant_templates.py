@@ -1,6 +1,9 @@
 import json
+import os
 import subprocess
 import sys
+
+import pytest
 
 from pdt import deploy_aws, deploy_azure, deploy_azure_container_apps, deploy_google_cloud, grant_templates
 
@@ -217,3 +220,21 @@ def test_the_google_grant_creates_and_writes_pdt_secrets_and_reads_no_other(tmp_
     assert "roles/secretmanager.admin" not in bindings
     unconditional = [role for role, condition in bindings.items() if condition.startswith("=None")]
     assert not any("secretAccessor" in role or role.endswith("Policy") for role in unconditional)
+
+
+@pytest.mark.parametrize("name, value", [
+    ("PDT_PROJECT", "my-project; rm -rf ~"), ("PDT_EXTERNAL_ID", "x' || true"),
+    ("PDT_AWS_ACCOUNT", "12345"), ("PDT_AWS_ROLE", "role' || 'a")])
+def test_the_google_script_refuses_a_value_that_is_not_of_its_form(tmp_path, name, value):
+    script = grant_templates.google_script()
+    head = script[:script.index('NUMBER="$(')]
+    harness = tmp_path / "check.sh"
+    harness.write_text(head + "echo checked\n")
+    good = {"PDT_PROJECT": "my-project", "PDT_EXTERNAL_ID": "0" * 32,
+            "PDT_AWS_ACCOUNT": "123456789012", "PDT_AWS_ROLE": "pdt-broker"}
+    proc = subprocess.run(["bash", str(harness)], capture_output=True, text=True,
+                          env={"PATH": os.environ["PATH"], **good})
+    assert proc.returncode == 0 and proc.stdout == "checked\n", proc.stderr
+    proc = subprocess.run(["bash", str(harness)], capture_output=True, text=True,
+                          env={"PATH": os.environ["PATH"], **good, name: value})
+    assert proc.returncode == 1 and f"{name} is not" in proc.stderr and proc.stdout == ""
