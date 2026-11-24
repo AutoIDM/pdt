@@ -146,6 +146,9 @@ API_VERSIONS = {
 VAULT_RESOURCE = "https://vault.azure.net"
 STORAGE_RESOURCE = "https://storage.azure.com"
 VAULT_API_VERSION = "7.4"
+VAULT_PURGES = 5
+VAULT_PURGE_POLLS = 12
+VAULT_PURGE_POLL_SECONDS = 5
 
 
 def az(*args: str) -> subprocess.CompletedProcess:
@@ -871,9 +874,23 @@ def purge_deleted_vault(settings: dict[str, str]) -> None:
     if tags.get("managed-by") != "pdt":
         fail(f"a soft-deleted Key Vault named {console.value(settings['vault'])} exists but is not "
              "managed by PDT; purge it or deploy to another subscription")
-    console.step(f"purging soft-deleted Key Vault {console.value(settings['vault'])}")
-    run_quiet("keyvault", "purge", "--name", settings["vault"],
-              slow=f"purging: Key Vault {console.value(settings['vault'])}")
+    purge_vault(settings)
+
+
+def purge_vault(settings: dict[str, str]) -> None:
+    # Azure can report the purge done and still list the vault for minutes, and a
+    # listed vault still owns its name; a purge sent again then finishes the job.
+    vault = settings["vault"]
+    console.step(f"purging soft-deleted Key Vault {console.value(vault)}")
+    with console.waiting(f"purging: Key Vault {console.value(vault)}"):
+        for _ in range(VAULT_PURGES):
+            run_quiet("keyvault", "purge", "--name", vault)
+            for _ in range(VAULT_PURGE_POLLS):
+                time.sleep(VAULT_PURGE_POLL_SECONDS)
+                if not az_json("keyvault", "show-deleted", "--name", vault):
+                    return
+    fail(f"Azure still lists the soft-deleted Key Vault {console.value(vault)} after "
+         f"{console.value(str(VAULT_PURGES))} purges; re-run the command")
 
 
 def workspace_resource(settings: dict) -> dict | None:
@@ -1050,9 +1067,7 @@ def destroy_group(settings: dict[str, str], app_name: str) -> bool:
                      f"(locked by {console.value(locked)})")
         return False
     if az_json("keyvault", "show-deleted", "--name", settings["vault"]):
-        console.step(f"purging soft-deleted Key Vault {console.value(settings['vault'])}")
-        run_quiet("keyvault", "purge", "--name", settings["vault"],
-                  slow=f"purging: Key Vault {console.value(settings['vault'])}")
+        purge_vault(settings)
     if az_tsv("group", "exists", "--name", rg) == "false":
         console.done(f"Nothing remains in resource group {console.value(rg)}.")
     return True
