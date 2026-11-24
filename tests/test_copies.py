@@ -212,13 +212,14 @@ def test_an_app_unit_with_a_path_outside_its_folder_writes_nothing(tmp_path):
 def git_archive_zip(tmp_path) -> bytes:
     repo = tmp_path / "repo"
     (repo / "hr").mkdir(parents=True)
-    (repo / "pdt.yml").write_text("apps: []\n")
-    (repo / "hr" / "run.py").write_text("print(1)\n")
+    (repo / "pdt.yml").write_bytes(b"apps: []\n")
+    (repo / "hr" / "run.py").write_bytes(b"print(1)\n")
     env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com"}
+    git = ["git", "-C", str(repo), "-c", "core.autocrlf=false"]
     for args in (["init", "-q"], ["add", "."], ["commit", "-q", "-m", "x"]):
-        subprocess.run(["git", "-C", str(repo), *args], check=True, env=env)
-    return subprocess.run(["git", "-C", str(repo), "archive", "--format=zip", "HEAD"],
+        subprocess.run([*git, *args], check=True, env=env)
+    return subprocess.run([*git, "archive", "--format=zip", "HEAD"],
                           check=True, capture_output=True).stdout
 
 

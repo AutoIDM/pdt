@@ -52,6 +52,7 @@ def machine(tmp_path, monkeypatch, portal):
                 "named_projects": [], "backend": "windows", "pdt_version": None, "python": None,
                 "proxy": {}}
     service.write_settings(settings)
+    monkeypatch.setattr(service.service_access, "is_admin", lambda: False)
     monkeypatch.setattr(service_runner, "OUTPUT_SECONDS", 0.2)
     monkeypatch.setattr(service_runner, "STOP_SECONDS", 1)
     monkeypatch.setattr(service, "LOOP_SECONDS", 0.05)
@@ -151,7 +152,7 @@ def test_a_command_reports_started_output_and_result(machine, portal, monkeypatc
     child(monkeypatch, "print('first'); print('second')")
     execute(job(machine))
     assert portal.facts() == ["started", "output", "result"]
-    assert "first\nsecond" in portal.output()
+    assert portal.output().splitlines() == ["first", "second"]
     result = portal.result()
     assert (result["outcome"], result["exit_code"], result["run_id"]) == ("done", 0, COMMAND)
     entry = service_runner.journal_read(COMMAND)
@@ -804,6 +805,7 @@ def test_status_names_the_service_as_json(machine, portal, monkeypatch, capsys):
     assert "windows (running)" in out and "Last check-in" in out and COMMAND in out
 
 
+@pytest.mark.skipif(os.name == "nt", reason="sends a POSIX signal")
 def test_a_service_run_needs_only_a_registration_and_status_sees_it(machine, portal, capsys):
     service.settings_path().unlink()
     portal.routes["/v1/service/checkin"] = lambda _body: checkin_answer(portal, poll_seconds=900)
@@ -1075,7 +1077,8 @@ def test_an_mr_run_of_the_system_service_runs_as_local_service_in_a_limited_fold
         return subprocess.Popen([sys.executable, "-c", "pass"])
 
     monkeypatch.setattr(service_runner.service_access, "start_as_local_service", start)
-    monkeypatch.setattr(service_runner.os, "name", "posix")
+    monkeypatch.setattr(service_runner.run_windows_task, "new_job", lambda: None)
+    monkeypatch.setattr(service_runner.run_windows_task, "assign", lambda job, process: None)
     proc, _handle = service_runner.start_child(job(machine, "run_mr", MR_ARGS), prepared)
     proc.wait()
     [(argv, cwd, env, output)] = started

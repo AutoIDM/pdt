@@ -1,4 +1,7 @@
+import os
 import subprocess
+
+import pytest
 
 from test_google_cloud_build import BUILDER, destroy_app, destroy_fake
 
@@ -21,6 +24,7 @@ def script_calls(tmp_path) -> list[str]:
     return proc.stdout.splitlines()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="needs a POSIX shell")
 def test_the_google_grant_makes_the_builder_and_may_act_as_both_job_accounts(tmp_path):
     calls = script_calls(tmp_path)
     created = [call for call in calls if call.startswith("iam service-accounts create")]

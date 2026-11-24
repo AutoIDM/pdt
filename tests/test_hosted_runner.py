@@ -317,7 +317,7 @@ def test_a_config_change_of_the_child_goes_back_to_the_copy_it_came_from(portal,
     copy_routes(portal)
     child(monkeypatch, "import pathlib\n"
                        "path = pathlib.Path('pdt.yml')\n"
-                       "path.write_text(path.read_text() + '  timezone: America/Chicago\\n')\n")
+                       "path.write_bytes(path.read_bytes() + b'  timezone: America/Chicago\\n')\n")
     assert hosted_runner.main([]) == 0
     text = b"platform:\n  provider: aws\n  timezone: America/Chicago\n"
     (start,) = portal.bodies("/v1/runner/copies/start")

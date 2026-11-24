@@ -244,6 +244,7 @@ def test_yes_prints_the_connect_page_and_does_not_wait(portal, monkeypatch, caps
     poll_answers(portal, (200, APPROVED))
     grant_answers(portal, "pending")
     monkeypatch.setattr(register_cli, "can_prompt", lambda _interactive: True)
+    monkeypatch.setattr(register_cli, "service_wanted", lambda: False)
     monkeypatch.setattr(grants, "places_of_project", lambda: [PLACE])
     assert register_cli.register(None, portal.url, True) == 0
     assert CONNECT in capsys.readouterr().out
@@ -310,6 +311,7 @@ def test_the_project_gets_the_customer(portal, tmp_path, monkeypatch):
     assert portal.bodies("/v1/device/start")[0]["projects"] == ["example"]
 
 
+@pytest.mark.skipif(__import__("os").name == "nt", reason="tests macOS and Linux")
 def test_on_macos_and_linux_register_says_the_service_runs_only_on_windows(portal, capsys):
     poll_answers(portal, (200, APPROVED))
     assert register_cli.register(None, portal.url) == 0
@@ -318,6 +320,7 @@ def test_on_macos_and_linux_register_says_the_service_runs_only_on_windows(porta
     assert "pdt service install" not in out
 
 
+@pytest.mark.skipif(__import__("os").name == "nt", reason="tests macOS and Linux")
 def test_on_macos_and_linux_service_install_refuses(capsys):
     from pdt import service
     assert service.install(None, None, True) == 1

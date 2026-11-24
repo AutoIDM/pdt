@@ -88,7 +88,7 @@ ALL_ON = (f"managed_services:\n  customer: {CUSTOMER}\n  send_logs: true\n"
 WORK = ("import os, pathlib, sys\n"
         "out = pathlib.Path('.pdt/runs', os.environ['PDT_RUN_ID'], 'output')\n"
         "out.mkdir(parents=True, exist_ok=True)\n"
-        "(out / 'report.csv').write_text('a,b\\n')\n"
+        "(out / 'report.csv').write_bytes(b'a,b\\n')\n"
         "print('hello from the app')\n"
         "sys.exit(int(sys.argv[1]))\n")
 

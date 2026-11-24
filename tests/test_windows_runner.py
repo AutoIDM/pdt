@@ -226,6 +226,7 @@ def test_runner_writes_the_result_to_the_application_log(folders, monkeypatch, c
         ReportEventW=lambda *args: reported.append(args[:4] + (list(args[7]),)),
         DeregisterEventSource=lambda source: reported.append(("closed", source)))
     monkeypatch.setattr(run_windows_task.subprocess, "Popen", fake_popen([], b"", code))
+    monkeypatch.setattr(run_windows_task, "hold_in_job", lambda: None)
     monkeypatch.setattr("ctypes.WinDLL", lambda name: advapi, raising=False)
 
     assert run_windows_task.main([str(app_dir), str(logs), url]) == code
@@ -247,6 +248,7 @@ def test_runner_keeps_the_exit_code_when_the_event_write_fails(folders, monkeypa
     advapi = types.SimpleNamespace(RegisterEventSourceW=lambda server, source: 7,
                                    ReportEventW=fail, DeregisterEventSource=lambda source: None)
     monkeypatch.setattr(run_windows_task.subprocess, "Popen", fake_popen([], b"", 3))
+    monkeypatch.setattr(run_windows_task, "hold_in_job", lambda: None)
     monkeypatch.setattr("ctypes.WinDLL", lambda name: advapi, raising=False)
 
     assert run_windows_task.main([str(app_dir), str(logs), url]) == 3

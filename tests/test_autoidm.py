@@ -433,8 +433,9 @@ def test_register_for_a_customer_this_computer_has_stops_and_names_the_file(back
     assert autoidm.files(CUSTOMER)[1].read_bytes() == before
 
 
-def test_register_for_a_second_customer_keeps_the_first(backend):
+def test_register_for_a_second_customer_keeps_the_first(backend, monkeypatch):
     url, _seen, answers = backend
+    monkeypatch.setattr(register_cli, "service_wanted", lambda: False)
     registered(url)
     answers.append((200, {"installation_id": "ins_0000000009", "customer_id": "cus_0000000002"}))
     assert register_cli.register("KQ7M-2RTX", url) == 0

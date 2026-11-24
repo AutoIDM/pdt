@@ -170,6 +170,7 @@ def test_the_google_script_binds_each_role_and_limits_the_secret_roles_to_pdt():
     assert "Project number: $NUMBER" in script and "$PDT_AWS_ROLE" in script
 
 
+@pytest.mark.skipif(os.name == "nt", reason="needs a POSIX shell")
 def test_the_shell_puts_the_project_number_in_each_secret_condition(tmp_path):
     script = grant_templates.google_script()
     start = script.index("grant() {")
@@ -189,6 +190,7 @@ def test_the_shell_puts_the_project_number_in_each_secret_condition(tmp_path):
           '"projects/123456789012/secrets/pdt-")'] * 3]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="needs a POSIX shell")
 def test_the_google_grant_creates_and_writes_pdt_secrets_and_reads_no_other(tmp_path):
     script = grant_templates.google_script()
     start = script.index("custom_role() {")
@@ -222,6 +224,7 @@ def test_the_google_grant_creates_and_writes_pdt_secrets_and_reads_no_other(tmp_
     assert not any("secretAccessor" in role or role.endswith("Policy") for role in unconditional)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="needs a POSIX shell")
 @pytest.mark.parametrize("name, value", [
     ("PDT_PROJECT", "my-project; rm -rf ~"), ("PDT_EXTERNAL_ID", "x' || true"),
     ("PDT_AWS_ACCOUNT", "12345"), ("PDT_AWS_ROLE", "role' || 'a")])
