@@ -86,7 +86,6 @@ def windows_running() -> bool:
 
 @dataclass(frozen=True)
 class Backend:
-    available: Callable[[], bool]
     define: Callable[[str, Path], None]
     start: Callable[[str], None]
     remove: Callable[[], None]
@@ -94,17 +93,11 @@ class Backend:
 
 
 BACKENDS = {
-    "windows": Backend(lambda: os.name == "nt", windows_define, windows_start, windows_remove,
-                       windows_running),
+    "windows": Backend(windows_define, windows_start, windows_remove, windows_running),
 }
 
 
-def choose(requested: str | None) -> str:
-    if requested is not None:
-        if not BACKENDS[requested].available():
-            raise BackendError(f"{requested} does not exist on this computer")
-        return requested
-    for name, backend in BACKENDS.items():
-        if backend.available():
-            return name
-    raise BackendError("the pdt service runs only on Windows")
+def choose() -> str:
+    if os.name != "nt":
+        raise BackendError("the pdt service runs only on Windows")
+    return "windows"

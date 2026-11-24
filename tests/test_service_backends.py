@@ -28,11 +28,6 @@ def programs(found):
     return [call["args"] for call in found]
 
 
-def test_the_parser_names_the_same_backends_as_the_table():
-    from pdt import cli
-    assert cli.BACKENDS == tuple(BACKENDS)
-
-
 def test_the_windows_service_is_automatic_as_localsystem_and_restarts_after_a_failure(calls,
                                                                                     monkeypatch):
     found, _answers = calls
@@ -105,6 +100,6 @@ def test_a_failed_program_is_a_backend_error(calls, tmp_path):
 def test_the_service_runs_only_on_windows(monkeypatch):
     monkeypatch.setattr(service_backends.os, "name", "posix")
     with pytest.raises(BackendError, match="the pdt service runs only on Windows"):
-        service_backends.choose(None)
+        service_backends.choose()
     monkeypatch.setattr(service_backends.os, "name", "nt")
-    assert service_backends.choose(None) == "windows"
+    assert service_backends.choose() == "windows"

@@ -32,7 +32,6 @@ if not completion.COMPLETING:
     from pdt.utils.email_auth import can_prompt
     from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
 
-BACKENDS = ("windows",)
 CLOUD_CLIS = {
     "aws": "deploy_aws.py",
     "az": "deploy_azure.py",
@@ -569,7 +568,7 @@ def cmd_register(args) -> int:
 
 def cmd_service(args) -> int:
     actions = {
-        "install": lambda: service.install(args.projects, args.backend, args.proxy, args.yes),
+        "install": lambda: service.install(args.projects, args.proxy, args.yes),
         "status": lambda: service.status(args.json),
         "start": service.start,
         "remove": lambda: service.remove(args.yes),
@@ -866,9 +865,6 @@ def build_parser() -> argparse.ArgumentParser:
                                    "to serve (default: the current project, and the folder "
                                    "service/projects in pdt's data folder)")
     projects.completer = completion.directories
-    q.add_argument("--backend", choices=BACKENDS,
-                   help="what keeps the service running (default and only value: windows, the "
-                        "Windows Service Control Manager)")
     q.add_argument("--proxy", metavar="URL",
                    help="the proxy for the service and its jobs (default: the proxy of this "
                         "computer's settings)")

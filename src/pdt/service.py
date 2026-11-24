@@ -35,7 +35,7 @@ from datetime import datetime
 from pathlib import Path
 
 from pdt import (__version__, config, console, managed_services, register_cli, service_access,
-                 service_backends, service_commands, service_delivery, service_install,
+                 service_backends, service_commands, service_install,
                  service_runner)
 from pdt.service_commands import Clock, Refused
 from pdt.service_delivery import Connection, Schedule
@@ -787,8 +787,7 @@ def wait_first_checkin(started: float) -> bool:
     return False
 
 
-def install_for(customer: str, projects: str | None, backend: str | None,
-                proxy: str | None) -> int:
+def install_for(customer: str, projects: str | None, proxy: str | None) -> int:
     try:
         current = read_settings() or {}
     except InstallError:
@@ -797,7 +796,7 @@ def install_for(customer: str, projects: str | None, backend: str | None,
         console.error(console.escape(one_customer_message(current["customer"])))
         return 1
     try:
-        name = service_backends.choose(backend)
+        name = service_backends.choose()
         write_data_folders()
         service_access.limit(service_runner.service_folder() / "projects")
         folder, named = choose_projects(projects, current)
@@ -810,9 +809,6 @@ def install_for(customer: str, projects: str | None, backend: str | None,
             settings["python"] = str(service_install.install_running(settings))
         if access_problem(settings, installing=True):
             return 1
-        previous = current.get("backend")
-        if previous in service_backends.BACKENDS and previous != name:
-            service_backends.BACKENDS[previous].remove()
         write_settings(settings)
         started = time.time()
         chosen = service_backends.BACKENDS[name]
@@ -834,8 +830,7 @@ def install_for(customer: str, projects: str | None, backend: str | None,
     return 0
 
 
-def install(projects: str | None, backend: str | None, proxy: str | None,
-            assume_yes: bool) -> int:
+def install(projects: str | None, proxy: str | None, assume_yes: bool) -> int:
     if os.name != "nt":
         console.error(console.escape(WINDOWS_ONLY))
         return 1
@@ -858,7 +853,7 @@ def install(projects: str | None, backend: str | None, proxy: str | None,
     if not ask_access(assume_yes):
         console.next_steps([(install_next_step(), "install it later")])
         return 1
-    return install_for(found[0], projects, backend, proxy)
+    return install_for(found[0], projects, proxy)
 
 
 def show_settings(settings: dict) -> None:
@@ -1038,4 +1033,4 @@ def when(stamp: float | None) -> str:
     return time.strftime(service_runner.TIME_FORMAT, time.gmtime(stamp))
 
 
-__all__ = ["run", "install", "start", "status", "remove", "sys", "service_delivery"]
+__all__ = ["run", "install", "start", "status", "remove"]

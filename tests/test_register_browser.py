@@ -307,5 +307,5 @@ def test_on_macos_and_linux_register_says_the_service_runs_only_on_windows(porta
 
 def test_on_macos_and_linux_service_install_refuses(capsys):
     from pdt import service
-    assert service.install(None, None, None, True) == 1
+    assert service.install(None, None, True) == 1
     assert "runs only on Windows" in " ".join(capsys.readouterr().out.split())

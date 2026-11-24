@@ -765,8 +765,7 @@ def test_start_starts_the_installed_service_through_its_manager(machine, monkeyp
     started, running = [], [False]
     monkeypatch.setattr(service.service_access, "is_admin", lambda: True)
     monkeypatch.setitem(service.service_backends.BACKENDS, "windows", service.service_backends.Backend(
-        lambda: True, lambda _python, _folder: None, started.append, lambda: None,
-        lambda: running[0]))
+        lambda _python, _folder: None, started.append, lambda: None, lambda: running[0]))
     assert service.start() == 0
     assert started == [None]
     assert "Started the Windows service pdt-service." in capsys.readouterr().out
@@ -792,7 +791,7 @@ def test_a_service_with_no_terminal_prints_plain_text_to_its_file(monkeypatch):
 
 def test_status_names_the_service_as_json(machine, portal, monkeypatch, capsys):
     monkeypatch.setitem(service.service_backends.BACKENDS, "windows", service.service_backends.Backend(
-        lambda: True, lambda _python, _folder: None, lambda: None, lambda: None, lambda: True))
+        lambda _python, _folder: None, lambda: None, lambda: None, lambda: True))
     journal(operation="run", state="started")
     assert service.status(as_json=True) == 0
     found = json.loads(capsys.readouterr().out)
