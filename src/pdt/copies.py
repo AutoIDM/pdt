@@ -11,8 +11,9 @@ In both cases it leaves out each link, each file larger than MAX_FILE_BYTES, and
 name. The zip has one fixed date, so the same files give the same zip.
 
 A manifest and a zip come from the network. `unpack` checks the zip's SHA-256 and size, each path
-(`path_problem`), each entry type, and each file size before it writes a file, and it writes no
-file over one that exists.
+(`path_problem`), each entry type, each file size, the count of files (MAX_COPY_FILES), and the
+sum of the sizes (MAX_COPY_BYTES) before it writes a file, and it writes no file over one that
+exists.
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ from pdt.utils import autoidm
 
 MAX_FILE_BYTES = 100 * 1024 * 1024
 MAX_COPY_BYTES = 1024 * 1024 * 1024
+MAX_COPY_FILES = 10_000
 MAX_PATH_CHARACTERS = 1024
 ROOT = "root"
 UNIT = re.compile(r"root|app=(?!\.{1,2}$)(?!-)[A-Za-z0-9._-]{1,128}|mr=[0-9]{1,9}")
@@ -196,7 +198,8 @@ def build_zip(root: Path, files: list[dict]) -> bytes:
 def path_problem(path: object) -> str:
     if not (isinstance(path, str) and 0 < len(path) <= MAX_PATH_CHARACTERS):
         return "is not a path of at most 1024 characters"
-    if "\\" in path or ":" in path or any(ord(character) < 32 for character in path):
+    if "\\" in path or ":" in path or any(ord(character) < 32 or ord(character) == 127
+                                          for character in path):
         return "holds a backslash, a colon, or a control character"
     parts = path.split("/")
     if PurePosixPath(path).is_absolute() or any(part in ("", ".", "..") for part in parts):
@@ -213,6 +216,8 @@ def checked_files(entry: dict) -> list[dict]:
     files = entry.get("files") if isinstance(entry, dict) else None
     if not isinstance(files, list):
         raise CopyError("the copy has no list of files")
+    if len(files) > MAX_COPY_FILES:
+        raise CopyError(f"the copy has {len(files)} files, over the limit of {MAX_COPY_FILES}")
     seen = set()
     for item in files:
         if not (isinstance(item, dict) and set(item) >= {"path", "size"}):
@@ -228,6 +233,10 @@ def checked_files(entry: dict) -> list[dict]:
         if item["path"].casefold() in seen:
             raise CopyError(f"the copy lists {item['path']!r} twice")
         seen.add(item["path"].casefold())
+    total = sum(item["size"] for item in files)
+    if total > MAX_COPY_BYTES:
+        raise CopyError(f"the files of the copy are {total} bytes, over the limit of "
+                        f"{MAX_COPY_BYTES} bytes")
     return files
 
 

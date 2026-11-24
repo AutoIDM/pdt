@@ -126,7 +126,7 @@ def test_a_zip_with_another_sha256_writes_nothing(tmp_path):
 
 
 @pytest.mark.parametrize("path", ["../escape.txt", "/etc/passwd", "a\\b", "c:x", ".pdt/state",
-                                  "con.txt", ".git/config", "folder/.env"])
+                                  "con.txt", ".git/config", "folder/.env", "del\x7f.txt"])
 def test_a_hostile_path_writes_nothing(tmp_path, path):
     files = {path: b"x"}
     data = zip_of(files)
@@ -147,6 +147,29 @@ def test_a_file_of_another_size_writes_nothing(tmp_path):
     entry = entry_of(data, {"pdt.yml": b"ab"})
     with pytest.raises(copies.CopyError, match="size"):
         copies.unpack(data, entry, tmp_path / "out")
+
+
+def test_a_copy_of_more_files_than_the_limit_writes_nothing(tmp_path, monkeypatch):
+    monkeypatch.setattr(copies, "MAX_COPY_FILES", 2)
+    files = {"a.py": b"a", "b.py": b"b", "c.py": b"c"}
+    data = zip_of(files)
+    with pytest.raises(copies.CopyError, match="3 files, over the limit of 2"):
+        copies.unpack(data, entry_of(data, files), tmp_path / "out")
+    assert not (tmp_path / "out").exists()
+
+
+def test_a_copy_whose_files_pass_the_byte_limit_writes_nothing(tmp_path, monkeypatch):
+    monkeypatch.setattr(copies, "MAX_COPY_BYTES", 2000)
+    files = {"a.txt": b"a" * 1500, "b.txt": b"b" * 1500}
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zipped:
+        for name, content in files.items():
+            zipped.writestr(name, content)
+    data = buffer.getvalue()
+    assert len(data) < 2000
+    with pytest.raises(copies.CopyError, match="3000 bytes, over the limit of 2000"):
+        copies.unpack(data, entry_of(data, files), tmp_path / "out")
+    assert not (tmp_path / "out").exists()
 
 
 def test_a_copy_that_names_another_customer_is_refused():
