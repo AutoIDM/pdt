@@ -7,7 +7,7 @@ token, one hour of credentials for the one place, the current copy of the projec
 input. It writes the copy into a new folder and runs pdt there as a child, as USER when it runs as
 root, with an allow list of env vars and the credentials, and nothing else of its own environment.
 It sends the output each OUTPUT_SECONDS to `/v1/runner/report`, stops the child when the answer
-says `cancel`, sends AutoIDM each unit of the copy whose `pdt.yml` or `<app>/config.yml` the
+says `cancel`, sends AutoIDM each unit of the copy whose `pdt.yml` or `<app>/pdt.yml` the
 child changed (`save_config`), uploads the log and, for `artifacts` and `run_mr`, the output folder, and reports
 the result. A hard timer ends the process at the run limit plus GRACE_SECONDS. Exit code 0 means
 that AutoIDM has the result.
@@ -252,14 +252,17 @@ def run(runner: Runner, answer: dict, work: Path) -> dict:
                                     log_key)
 
 
-def config_path(unit: str) -> str:
-    return "pdt.yml" if unit == copies.ROOT else f"{unit.removeprefix('app=')}/config.yml"
+def config_path(project: Path, unit: str) -> str:
+    if unit == copies.ROOT:
+        return config.PROJECT_FILE
+    app = unit.removeprefix("app=")
+    return f"{app}/{config.app_file(project / app).name}"
 
 
 def read_config(project: Path, units: list[dict]) -> dict[str, bytes | None]:
     found = {}
     for entry in units:
-        path = project / config_path(entry["unit"])
+        path = project / config_path(project, entry["unit"])
         found[entry["unit"]] = path.read_bytes() if path.is_file() else None
     return found
 
@@ -272,7 +275,7 @@ def save_config(runner: Runner, project: Path, units: list[dict],
     the problem when a unit could not be saved."""
     problem = None
     for entry in units:
-        unit, relative = entry["unit"], config_path(entry["unit"])
+        unit, relative = entry["unit"], config_path(project, entry["unit"])
         path = project / relative
         text = path.read_bytes() if path.is_file() else None
         if text == before[unit]:

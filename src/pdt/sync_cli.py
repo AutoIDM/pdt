@@ -4,7 +4,7 @@ A copy is the current zip of each unit of the project (pdt.copies): `root`, and 
 each app folder. `pdt sync up` sends each unit, or one app's unit. `pdt sync down` writes each
 unit, or one app's unit, into this project: it adds each new file, replaces each changed file, and
 deletes each file of an app folder that the copy does not hold. It never touches a file that a
-copy leaves out, such as `.env`. It merges `pdt.yml` and each `config.yml`: the copy's value wins
+copy leaves out, such as `.env`. It merges the project's and each app's `pdt.yml`: the copy's value wins
 for each key it holds, and a key only this computer holds stays. Before it changes a file, it
 saves the file in `.pdt/backup/<UTC time>/`. At a terminal it lists the changes and asks one
 question; `--yes` and a run with no terminal do not ask. It stops in a Git clone, because Git
@@ -31,9 +31,6 @@ from pdt import config, console, copies, managed_services, register_cli, service
 from pdt.deploy import DECLINED
 from pdt.utils import autoidm
 from pdt.utils.email_auth import can_prompt
-
-MERGED_FILES = {copies.ROOT: config.PROJECT_FILE, "app": "config.yml"}
-
 
 def context() -> tuple[Path, str, str, autoidm.Registration]:
     named = os.environ.get(service_runner.SERVICE_PROJECT_ENV, "").strip()
@@ -133,7 +130,7 @@ def merged_text(local: bytes, copy: bytes, path: str) -> bytes:
 
 def plan_unit(root: Path, unit: str, staged: Path, files: list[dict]) -> dict[str, bytes | None]:
     app = unit.removeprefix("app=") if unit != copies.ROOT else None
-    merged_file = f"{app}/{MERGED_FILES['app']}" if app else MERGED_FILES[copies.ROOT]
+    merged_file = f"{app}/{config.app_file(root / app).name}" if app else config.PROJECT_FILE
     changes: dict[str, bytes | None] = {}
     wanted = set()
     for entry in files:

@@ -309,7 +309,7 @@ def choose_schedule(app: dict, assume_yes: bool) -> str:
 
 
 def choose_timezone(app: dict, provider: str) -> None:
-    """When the app has a schedule and no time zone, save one in the app's config.yml, so every
+    """When the app has a schedule and no time zone, save one in the app's pdt.yml, so every
     later deploy uses the same one: the time zone in TIMEZONE_ENV (the person's browser, for a
     portal deploy by the hosted runner), else this computer's. A Windows task runs on local time."""
     if provider == "windows" or app["schedule"] is None or app["timezone_set"]:

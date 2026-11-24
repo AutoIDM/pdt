@@ -1,4 +1,6 @@
+import base64
 import io
+import json
 import subprocess
 import urllib.error
 from types import SimpleNamespace
@@ -55,8 +57,9 @@ def test_aws_stops_on_a_refused_secret_read(monkeypatch):
     (1, "ERROR: NOT_FOUND: Secret Version [latest] not found or has no versions.", None),
 ])
 def test_google_cloud_reads_a_missing_secret_as_none(monkeypatch, code, stderr, value):
+    answer = json.dumps({"payload": {"data": base64.b64encode(b"{}").decode()}})
     monkeypatch.setattr(deploy_google_cloud.subprocess, "run", lambda *args, **kwargs:
-                        subprocess.CompletedProcess(args, code, "{}" if not code else "", stderr))
+                        subprocess.CompletedProcess(args, code, answer if not code else "", stderr))
     assert deploy_google_cloud.secret_value("p", "pdt-report-env") == value
 
 

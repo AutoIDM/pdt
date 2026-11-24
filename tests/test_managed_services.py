@@ -482,7 +482,7 @@ def test_a_deploy_sends_app_deployed_with_the_schedule_and_the_place(project, ba
                                                                      monkeypatch, capsys):
     url, seen, _answers = backend
     project_with(project, f"managed_services:\n  customer: {CUSTOMER}\n")
-    (project / "report" / "config.yml").write_text(
+    (project / "report" / "pdt.yml").write_text(
         "schedule: daily\ntimezone: America/New_York\nplatform:\n  provider: aws\n"
         "  region: us-east-2\n")
     registered(url)

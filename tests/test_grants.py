@@ -257,7 +257,9 @@ def test_a_worker_login_skips_the_profile_and_the_simulation(monkeypatch):
 def test_the_root_deploy_skips_the_env_check_for_a_worker(keep, monkeypatch, tmp_path):
     monkeypatch.setenv(deploy.config.LOCK_PROJECT_ENV, str(tmp_path))
     monkeypatch.setattr(deploy, "_load", lambda _name: (
-        {"dir": tmp_path, "name": "hr", "schedule": "daily", "platform": {"provider": "aws"}}, "aws"))
+        {"dir": tmp_path, "name": "hr", "app_profile": "job", "schedule": "daily",
+         "timezone_set": True,
+         "platform": {"provider": "aws"}}, "aws"))
     monkeypatch.setattr(deploy.config, "validate_app", lambda _name: [])
     monkeypatch.setattr(deploy.config, "env_file_lines", lambda _start: [])
     monkeypatch.setattr(deploy.config, "load_env", lambda _start: [])
@@ -277,7 +279,9 @@ def test_the_root_deploy_skips_the_env_check_for_a_worker(keep, monkeypatch, tmp
 def test_a_normal_root_deploy_still_checks_the_env(monkeypatch, tmp_path, capsys):
     monkeypatch.delenv(deploy_common.KEEP_SECRET_ENV, raising=False)
     monkeypatch.setattr(deploy, "_load", lambda _name: (
-        {"dir": tmp_path, "name": "hr", "schedule": "daily", "platform": {"provider": "aws"}}, "aws"))
+        {"dir": tmp_path, "name": "hr", "app_profile": "job", "schedule": "daily",
+         "timezone_set": True,
+         "platform": {"provider": "aws"}}, "aws"))
     monkeypatch.setattr(deploy.config, "validate_app", lambda _name: [])
     monkeypatch.setattr(deploy.config, "env_file_lines", lambda _start: [])
     monkeypatch.setattr(deploy.config, "load_env", lambda _start: [])
