@@ -71,7 +71,41 @@ def test_a_wrong_customer_is_refused():
 
 def test_an_expired_token_is_refused():
     with pytest.raises(Refused, match="expired"):
-        check(token(exp=int(time.time()) - 3600))
+        check(token(iat=int(time.time()) - 4200, exp=int(time.time()) - 3600))
+
+
+def test_a_token_that_expires_before_it_was_issued_is_refused():
+    now = int(time.time())
+    with pytest.raises(Refused, match="expires before it was issued"):
+        check(token(iat=now + 60, exp=now + 60))
+
+
+def test_a_token_issued_past_the_clock_skew_is_refused():
+    now = int(time.time())
+    with pytest.raises(Refused, match="issued in the future"):
+        check(token(iat=now + service_commands.CLOCK_SKEW_SECONDS + 60,
+                    exp=now + service_commands.CLOCK_SKEW_SECONDS + 120), now=now)
+    later = now + service_commands.CLOCK_SKEW_SECONDS - 60
+    assert check(token(iat=later, exp=later + 60), now=now)["operation"] == "list"
+
+
+def key_set(new_keys, version=2):
+    return sign({"aud": CUSTOMER, "iss": service_commands.KEY_SET_ISSUER,
+                 "command_keys_version": version, "keys": new_keys})
+
+
+def test_a_key_set_of_parsed_keys_with_a_kid_is_taken():
+    assert service_commands.next_key_set(key_set(KEYS), 1, KEYS, CUSTOMER) == (2, KEYS)
+
+
+@pytest.mark.parametrize("new_keys, says", [
+    ([{"kid": "", "pem": KEYS[0]["pem"]}], "no kid"),
+    ([{"kid": "key-2", "pem": "-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n"}],
+     "does not parse"),
+])
+def test_a_key_set_with_a_bad_key_is_refused(new_keys, says):
+    with pytest.raises(Refused, match=says):
+        service_commands.next_key_set(key_set(new_keys), 1, KEYS, CUSTOMER)
 
 
 def test_a_missing_expiry_is_refused():

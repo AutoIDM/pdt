@@ -591,3 +591,12 @@ def test_the_tls_context_trusts_the_roots_of_certifi(tmp_path, monkeypatch):
     monkeypatch.setattr(autoidm.certifi, "where", lambda: str(bundle))
     found = autoidm.tls_context().get_ca_certs()
     assert ((("commonName", "pdt test root"),),) in [cert["subject"] for cert in found]
+
+
+@pytest.mark.parametrize("filename, fields", [
+    ('a".log', {"key": "k"}), ("a\r\n.log", {"key": "k"}), ("a.log", {'k"ey': "k"}),
+    ("a.log", {"key\n": "k"})])
+def test_post_file_refuses_a_quote_or_a_new_line_in_a_name(filename, fields):
+    with pytest.raises(autoidm.AutoidmError, match="quote or a new line"):
+        autoidm.post_file({"url": "https://example.com/up", "fields": fields}, filename, b"x",
+                          "/v1/uploads")

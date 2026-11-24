@@ -57,3 +57,22 @@ def test_failed_check_ins_wait_longer_each_time():
     schedule.checkin_failed(0.0)
     assert 0 < first <= 2 and schedule.retry_at >= 4
     assert schedule.wanted
+
+
+def test_a_websocket_url_that_is_not_wss_starts_no_connection():
+    said = []
+    from pdt.service_delivery import Connection
+    connection = Connection(None, said.append)
+    for url in ["ws://example.com/ws", "http://example.com/ws", "https://example.com/ws"]:
+        connection.start(url)
+    assert connection.thread is None and connection.url is None
+    assert len(said) == 3 and said[0] == ("AutoIDM answered with the WebSocket URL 'ws://example.com/ws', which is not "
+                                          "wss. The service checks in without it.")
+
+
+def test_write_event_keeps_a_requester_on_one_line(monkeypatch):
+    lines = []
+    monkeypatch.setattr(service_runner, "write_log_line", lambda line, event_id: lines.append(line))
+    service_runner.write_event(COMMAND, "claimed", "list", "a@example.com\nfact=result\x1b", None)
+    assert lines == [f"command={COMMAND} fact=claimed operation=list "
+                     "requested_by=a@example.com?fact=result? outcome=-"]

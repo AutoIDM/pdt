@@ -41,6 +41,8 @@ PLACE = re.compile(r"(aws|azure|google-cloud):[A-Za-z0-9-]{1,64}:[a-z0-9-]{1,32}
 HOUR = 3600
 MINUTE = 60
 CANCEL_EXPIRES_SECONDS = 25200
+# The most that the clock of AutoIDM can be ahead of the clock of this computer.
+CLOCK_SKEW_SECONDS = 300
 PROJECT_ENV_LOCK = threading.Lock()
 
 
@@ -177,6 +179,10 @@ def check_times(claims: dict, now: float, longest: int) -> None:
     exp, iat = claims.get("exp"), claims.get("iat")
     if not (type(exp) is int and type(iat) is int):
         raise Refused("The token has no valid times.")
+    if exp <= iat:
+        raise Refused("The token expires before it was issued.")
+    if iat > now + CLOCK_SKEW_SECONDS:
+        raise Refused("The token was issued in the future.")
     if exp - iat > longest:
         raise Refused(f"The token is valid for {exp - iat} seconds, and the most it can be is "
                       f"{longest} seconds.")
@@ -229,6 +235,15 @@ def next_key_set(token: object, version: int, keys: list[dict],
             and all(isinstance(key, dict) and isinstance(key.get("kid"), str)
                     and isinstance(key.get("pem"), str) for key in new)):
         raise Refused(f"The key set of version {found} holds no valid keys.")
+    from cryptography.hazmat.primitives.serialization import load_pem_public_key
+    for key in new:
+        if not key["kid"]:
+            raise Refused(f"The key set of version {found} holds a key with no kid.")
+        try:
+            load_pem_public_key(key["pem"].encode())
+        except ValueError:
+            raise Refused(f"The key {key['kid']} of the key set of version {found} does not "
+                          "parse.") from None
     return found, new
 
 

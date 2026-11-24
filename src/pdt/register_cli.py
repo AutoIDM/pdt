@@ -76,6 +76,8 @@ SEND_QUESTIONS = {
 
 
 def restrict_folder(folder: Path) -> None:
+    if os.name != "nt":
+        os.chmod(folder, 0o700)
     service_access.restrict_folder(folder, FOLDER_SDDL)
 
 
@@ -326,6 +328,8 @@ def register_in_browser(api_url: str) -> tuple:
     with config.locked(folder):
         write_key(pending, key)
     answer, user_code = approve_in_browser(api_url, device_start_body(key))
+    if answer is None:
+        pending.unlink(missing_ok=True)
     return answer, key, pending, user_code
 
 

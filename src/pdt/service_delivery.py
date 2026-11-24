@@ -21,6 +21,7 @@ from __future__ import annotations
 import random
 import threading
 import time
+import urllib.parse
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -56,6 +57,16 @@ class Connection:
         self.said = ""
 
     def start(self, url: str) -> None:
+        try:
+            target = urllib.parse.urlsplit(str(url))
+            usable = target.scheme == "wss" or (
+                target.scheme == "ws" and target.hostname in ("127.0.0.1", "localhost"))
+        except ValueError:
+            usable = False
+        if not usable:
+            self.say_once(f"AutoIDM answered with the WebSocket URL {url!r}, which is not wss. "
+                          "The service checks in without it.")
+            return
         with self.lock:
             self.url = url
         if self.thread is None:

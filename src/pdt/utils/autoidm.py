@@ -320,6 +320,8 @@ def post_file(place: dict, filename: str, data: bytes | Path, what: str) -> None
             and all(isinstance(value, str) for item in fields.items() for value in item)):
         raise AutoidmError(f"AutoIDM answered {what} without fields of text")
     url = check_url(place["url"], what)
+    if any(character in text for text in (filename, *fields) for character in '"\r\n'):
+        raise AutoidmError(f"AutoIDM answered {what} with a name that holds a quote or a new line")
     boundary = uuid.uuid4().hex
     try:
         parts = [f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n'

@@ -148,8 +148,9 @@ def claiming_ids() -> list[str]:
 
 def write_event(command_id: str, fact: str, operation: str, requested_by: object,
                 outcome: str | None) -> None:
+    who = "".join(character if character.isprintable() else "?" for character in str(requested_by))
     line = (f"command={command_id} fact={fact} operation={operation} "
-            f"requested_by={requested_by} outcome={outcome or '-'}")
+            f"requested_by={who} outcome={outcome or '-'}")
     write_log_line(line, EVENT_IDS[fact])
 
 

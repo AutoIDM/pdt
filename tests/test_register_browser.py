@@ -63,6 +63,19 @@ def test_the_browser_flow_prints_the_code_waits_and_saves_the_keys(portal, capsy
     assert portal.bodies("/v1/device/confirm") == [{"version": 1, "user_code": "KQ7M-2RTX"}]
 
 
+@pytest.mark.parametrize("answer", [(200, {"state": "denied"}), (404, {"error": "unknown_code"})])
+def test_a_denied_or_expired_approval_deletes_the_pending_key(portal, answer):
+    poll_answers(portal, answer)
+    assert register_cli.register(None, portal.url) == 1
+    assert not (autoidm.folder() / register_cli.DEVICE_KEY).exists()
+
+
+@pytest.mark.skipif(__import__("os").name == "nt", reason="the mode is POSIX")
+def test_the_folder_is_only_for_its_owner_on_posix(tmp_path):
+    register_cli.restrict_folder(tmp_path)
+    assert tmp_path.stat().st_mode & 0o777 == 0o700
+
+
 def test_each_run_sends_a_new_public_key(portal):
     poll_answers(portal, (200, {"state": "denied"}))
     assert register_cli.register(None, portal.url) == 1
