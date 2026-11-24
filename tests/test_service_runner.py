@@ -1047,6 +1047,50 @@ def test_a_scheduled_run_and_an_mr_run_of_one_app_hold_their_locks_at_once(machi
             pass
 
 
+def test_an_mr_run_keeps_its_home_temp_and_caches_in_its_work_folder(machine, portal,
+                                                                       monkeypatch):
+    serve_mr(portal)
+    monkeypatch.setattr(service_runner.service_access, "is_system", lambda: False)
+    prepared = service_runner.prepare(job(machine, "run_mr", MR_ARGS), dict(os.environ))
+    assert prepared.local_service is False
+    for name, folder in service_runner.MR_FOLDERS.items():
+        assert Path(prepared.env[name]) == prepared.work / folder
+        assert (prepared.work / folder).is_dir()
+    service_runner.remove_folder(prepared.work)
+
+
+def test_an_mr_run_of_the_system_service_runs_as_local_service_in_a_limited_folder(
+        machine, portal, monkeypatch):
+    serve_mr(portal)
+    limited, started = [], []
+    monkeypatch.setattr(service_runner.service_access, "is_system", lambda: True)
+    monkeypatch.setattr(service_runner.service_access, "restrict_folder",
+                        lambda folder, sddl: limited.append((folder, sddl)))
+    prepared = service_runner.prepare(job(machine, "run_mr", MR_ARGS), dict(os.environ))
+    assert prepared.local_service is True
+    assert limited == [(prepared.work, service_runner.service_access.WORK_SDDL)]
+
+    def start(argv, cwd, env, output):
+        started.append((argv, cwd, env, output))
+        return subprocess.Popen([sys.executable, "-c", "pass"])
+
+    monkeypatch.setattr(service_runner.service_access, "start_as_local_service", start)
+    monkeypatch.setattr(service_runner.os, "name", "posix")
+    proc, _handle = service_runner.start_child(job(machine, "run_mr", MR_ARGS), prepared)
+    proc.wait()
+    [(argv, cwd, env, output)] = started
+    assert argv == prepared.argv and cwd == prepared.cwd and env == prepared.env
+    assert isinstance(output, int)
+    service_runner.remove_folder(prepared.work)
+
+
+def test_the_work_folder_of_an_mr_run_is_only_for_local_service_and_the_administrators():
+    sddl = service_runner.service_access.WORK_SDDL
+    assert sddl == "O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1301bf;;;LS)"
+    assert "(A;OICI;0x1200a9;;;LS)" in service_runner.service_access.READABLE_SDDL
+    assert ";LS)" not in service_runner.service_access.PRIVATE_SDDL
+
+
 def test_an_mr_copy_of_another_customer_does_not_run(machine, portal, monkeypatch):
     serve_mr(portal, {"pdt.yml": b"managed_services:\n  customer: cus_0000000000\n",
                       "hr/run.py": b"x"})

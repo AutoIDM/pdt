@@ -22,8 +22,12 @@ command, and the service keeps the file. At a start, `recover` follows each proc
 runs (both the PID and the creation time match), and reports `interrupted` for the others.
 
 `run_mr` runs the app from the copy of a merge request in a work folder of its own, so it takes
-the locks of that folder and none of the project on this computer. `secrets_set` gets its value
-from `/v1/commands/input` once and gives it to the child on stdin.
+the locks of that folder and none of the project on this computer. Its home, temporary, and cache
+folders are in the work folder too. When the service runs as SYSTEM, the child runs as LOCAL
+SERVICE with no privilege (`service_access.start_as_local_service`), and only that account,
+SYSTEM, and Administrators can open the work folder (`WORK_SDDL`), so the code of a merge request
+cannot read the keys and settings of the service or change a project on this computer.
+`secrets_set` gets its value from `/v1/commands/input` once and gives it to the child on stdin.
 """
 
 from __future__ import annotations
@@ -47,7 +51,8 @@ from pathlib import Path
 import jwt
 from dotenv import dotenv_values
 
-from pdt import config, copies, deploy_common, managed_services, run_windows_task, service_commands
+from pdt import (config, copies, deploy_common, managed_services, run_windows_task, service_access,
+                 service_commands)
 from pdt.service_commands import OPERATIONS, Clock, Refused
 from pdt.utils import autoidm
 
@@ -78,6 +83,11 @@ MR_STATE_VERSION = "0.1.14"
 # A requirement of the script metadata: its name, its extras, and its specifiers before any marker.
 REQUIREMENT = re.compile(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[[^\]]*\])?\s*\(?([^;@)]*)\)?")
 SPECIFIER = re.compile(r"(===|==|<=|<)\s*[vV]?([0-9][0-9A-Za-z.*+!_-]*)")
+# The folders a merge request run writes, in its work folder, by env var.
+MR_FOLDERS = {"TEMP": "temp", "TMP": "temp", "HOME": "home", "USERPROFILE": "home",
+              "LOCALAPPDATA": "home/AppData/Local", "APPDATA": "home/AppData/Roaming",
+              "XDG_CACHE_HOME": "cache", "UV_CACHE_DIR": "cache/uv", "UV_TOOL_DIR": "cache/tools",
+              "UV_PYTHON_INSTALL_DIR": "cache/python"}
 # A PEP 440 release with an optional pre-release and post-release, enough to order pins.
 VERSION = re.compile(r"([0-9]+(?:\.[0-9]+)*)(?:[-_.]?(a|alpha|b|beta|c|rc|pre|preview)[-_.]?([0-9]*))?"
                      r"(?:[-_.]?(post|rev|r)[-_.]?([0-9]*)|-([0-9]+))?", re.I)
@@ -451,9 +461,14 @@ def upload_log(job: Job) -> tuple[str | None, str | None]:
 def artifact_key(job: Job, output: Path) -> tuple[str | None, str | None]:
     if output.is_symlink() or output.is_junction() or not output.is_dir():
         return None, None
-    root = output.resolve()
-    files = [path for path in sorted(output.rglob("*"))
-             if path.is_file() and path.resolve().is_relative_to(root)]
+    files = []
+    for path in sorted(output.rglob("*")):
+        try:
+            found = copies.inside(output, path.relative_to(output).as_posix())
+        except copies.CopyError:
+            continue
+        if found.is_file():
+            files.append(found)
     if not files:
         return None, None
     with tempfile.TemporaryDirectory(dir=work_root()) as folder:
@@ -628,6 +643,7 @@ class Prepared:
     output: Path | None = None
     work: Path | None = None
     stdin: bytes | None = None
+    local_service: bool = False
 
 
 def output_folder(app_dir: Path, command_id: str) -> Path:
@@ -641,6 +657,12 @@ def prepare(job: Job, base: dict[str, str]) -> Prepared:
     if operation.from_copy:
         work = work_root() / job.command_id
         work.mkdir()
+        local_service = service_access.is_system()
+        if local_service:
+            service_access.restrict_folder(work, service_access.WORK_SDDL)
+        folders = {name: work / folder for name, folder in MR_FOLDERS.items()}
+        for folder in folders.values():
+            folder.mkdir(parents=True, exist_ok=True)
         project = write_copy_files(job, work)
         values = env_file_values(job.project, app)
         extra = {"PDT_RUN_ID": job.command_id, "PDT_TRIGGER": "mr",
@@ -653,8 +675,9 @@ def prepare(job: Job, base: dict[str, str]) -> Prepared:
         output = output_folder(project / app, job.command_id)
         output.mkdir(parents=True, exist_ok=True)
         extra["PDT_OUTPUT_DIR"] = str(output)
+        extra.update({name: str(folder) for name, folder in folders.items()})
         return Prepared(project, child_env({**values, **base}, project, extra), argv,
-                        output, work)
+                        output, work, local_service=local_service)
     if job.operation == "sync_down":
         target = job.project or Path(base[PROJECTS_HOME_ENV]) / job.args["project"]
         target.mkdir(parents=True, exist_ok=True)
@@ -729,9 +752,14 @@ def start_child(job: Job, prepared: Prepared) -> tuple[subprocess.Popen, int | N
         options = dict(tree_options())
         if os.name == "nt":
             options["creationflags"] |= CREATE_SUSPENDED
-        proc = subprocess.Popen(prepared.argv, cwd=prepared.cwd, env=prepared.env,
-                                stdin=subprocess.DEVNULL if prepared.stdin is None else subprocess.PIPE,
-                                stdout=out, stderr=subprocess.STDOUT, **options)
+        if prepared.local_service:
+            proc = service_access.start_as_local_service(prepared.argv, prepared.cwd,
+                                                         prepared.env, out.fileno())
+        else:
+            proc = subprocess.Popen(prepared.argv, cwd=prepared.cwd, env=prepared.env,
+                                    stdin=subprocess.DEVNULL if prepared.stdin is None
+                                    else subprocess.PIPE,
+                                    stdout=out, stderr=subprocess.STDOUT, **options)
     handle = None
     if os.name == "nt":
         import ctypes

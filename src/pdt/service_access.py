@@ -24,9 +24,14 @@ PATH_ENV = "PDT_ACCESS_PATH"
 SDDL_ENV = "PDT_FOLDER_SDDL"
 # Owner Administrators, and an access list that inherits nothing. SYSTEM and Administrators have
 # full control, and Users can read, which a `pdt run` from a terminal needs for pwsh and logs.
-READABLE_SDDL = "O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)"
+# LOCAL SERVICE (LS), which runs a merge request run, can read the program, the same as Users.
+READABLE_SDDL = ("O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)"
+                 "(A;OICI;0x1200a9;;;LS)")
 # The same with no read for Users: settings, the journal, keys.
 PRIVATE_SDDL = "O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+# The work folder of a merge request run: LOCAL SERVICE can change it (FILE_GENERIC_READ, WRITE,
+# EXECUTE, and DELETE), and no other account but SYSTEM and Administrators can open it.
+WORK_SDDL = "O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1301bf;;;LS)"
 # SYSTEM, Administrators, and the owner of the system files. CREATOR OWNER rules apply only to
 # the owner of a new file.
 ALLOWED_SIDS = ("S-1-5-18", "S-1-5-32-544", "S-1-3-0",
@@ -72,6 +77,15 @@ SET_FOLDER_SDDL = ("$ErrorActionPreference = 'Stop'; "
                    "$folder.SetAccessControl($acl); "
                    "$folder.GetAccessControl().GetSecurityDescriptorSddlForm('Owner, Access')")
 MACOS_ADMIN_GROUP = 80
+LOGON32_LOGON_SERVICE = 5
+LOGON32_PROVIDER_DEFAULT = 0
+DISABLE_MAX_PRIVILEGE = 0x1
+PROC_THREAD_ATTRIBUTE_HANDLE_LIST = 0x20002
+STARTF_USESTDHANDLES = 0x100
+INFINITE = 0xFFFFFFFF
+# CREATE_SUSPENDED, CREATE_NEW_PROCESS_GROUP, CREATE_UNICODE_ENVIRONMENT,
+# EXTENDED_STARTUPINFO_PRESENT, and CREATE_NO_WINDOW.
+LOCAL_SERVICE_FLAGS = 0x4 | 0x200 | 0x400 | 0x80000 | 0x08000000
 
 
 class AccessError(RuntimeError):
@@ -82,6 +96,15 @@ def is_admin() -> bool:
     if os.name == "nt":
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
     return os.geteuid() == 0
+
+
+def is_system() -> bool:
+    """Whether this process runs as SYSTEM, the one account that can log on as LOCAL SERVICE."""
+    if os.name != "nt":
+        return False
+    found = subprocess.run(["whoami", "/user"], stdin=subprocess.DEVNULL, capture_output=True,
+                           text=True, check=False).stdout
+    return "S-1-5-18" in found.split()
 
 
 def run_powershell(script: str, env: dict[str, str]) -> str:
@@ -200,3 +223,132 @@ def repair_commands(folder: Path) -> list[tuple[str, str]]:
                  "give each file and folder in it the same access")]
     return [(f'sudo chown -R root "{folder}"', "make root the owner"),
             (f'sudo chmod -R go-w "{folder}"', "let only root change it")]
+
+
+class LocalServiceChild:
+    """A child that runs as LOCAL SERVICE, started suspended. It has the methods of a Popen that
+    the service uses, and `_handle`, the process handle, as a Popen has on Windows."""
+
+    def __init__(self, process: int, thread: int, pid: int) -> None:
+        self._handle = process
+        self.thread = thread
+        self.pid = pid
+        self.returncode: int | None = None
+
+    def poll(self) -> int | None:
+        if self.returncode is None and windows_kernel().WaitForSingleObject(self._handle, 0) == 0:
+            self.finish()
+        return self.returncode
+
+    def wait(self) -> int:
+        if self.returncode is None:
+            windows_kernel().WaitForSingleObject(self._handle, INFINITE)
+            self.finish()
+        return self.returncode
+
+    def kill(self) -> None:
+        windows_kernel().TerminateProcess(self._handle, 1)
+
+    def finish(self) -> None:
+        import ctypes
+        from ctypes import wintypes
+        kernel = windows_kernel()
+        code = wintypes.DWORD()
+        kernel.GetExitCodeProcess(self._handle, ctypes.byref(code))
+        self.returncode = code.value
+        kernel.CloseHandle(self.thread)
+        kernel.CloseHandle(self._handle)
+
+
+def windows_kernel():
+    import ctypes
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+    kernel.WaitForSingleObject.restype = wintypes.DWORD
+    kernel.TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
+    kernel.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+    kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel.InitializeProcThreadAttributeList.argtypes = (
+        ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(ctypes.c_size_t))
+    kernel.UpdateProcThreadAttribute.argtypes = (
+        ctypes.c_void_p, wintypes.DWORD, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_size_t,
+        ctypes.c_void_p, ctypes.c_void_p)
+    kernel.DeleteProcThreadAttributeList.argtypes = (ctypes.c_void_p,)
+    return kernel
+
+
+def start_as_local_service(argv: list[str], cwd: Path, env: dict[str, str],
+                           output: int) -> LocalServiceChild:
+    """Start `argv` suspended as LOCAL SERVICE, with no privilege but the bypass of traverse
+    checks (DISABLE_MAX_PRIVILEGE), its output and errors in the open file `output`, and no
+    other handle of the service. The caller puts it in a job object and resumes it."""
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    class StartupInfo(ctypes.Structure):
+        _fields_ = [("cb", wintypes.DWORD), ("reserved", wintypes.LPWSTR),
+                    ("desktop", wintypes.LPWSTR), ("title", wintypes.LPWSTR),
+                    *((name, wintypes.DWORD) for name in
+                      ("x", "y", "x_size", "y_size", "x_chars", "y_chars", "fill", "flags")),
+                    ("show_window", wintypes.WORD), ("reserved2_size", wintypes.WORD),
+                    ("reserved2", ctypes.c_void_p), ("stdin", wintypes.HANDLE),
+                    ("stdout", wintypes.HANDLE), ("stderr", wintypes.HANDLE),
+                    ("attributes", ctypes.c_void_p)]
+
+    class ProcessInformation(ctypes.Structure):
+        _fields_ = [("process", wintypes.HANDLE), ("thread", wintypes.HANDLE),
+                    ("pid", wintypes.DWORD), ("tid", wintypes.DWORD)]
+
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    advapi.LogonUserW.argtypes = (wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.LPCWSTR,
+                                  wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE))
+    advapi.CreateRestrictedToken.argtypes = (
+        wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD,
+        ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p, ctypes.POINTER(wintypes.HANDLE))
+    advapi.CreateProcessAsUserW.argtypes = (
+        wintypes.HANDLE, wintypes.LPCWSTR, wintypes.LPWSTR, ctypes.c_void_p, ctypes.c_void_p,
+        wintypes.BOOL, wintypes.DWORD, ctypes.c_void_p, wintypes.LPCWSTR, ctypes.c_void_p,
+        ctypes.POINTER(ProcessInformation))
+    kernel = windows_kernel()
+
+    def check(ok: int) -> None:
+        if not ok:
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    logon, token = wintypes.HANDLE(), wintypes.HANDLE()
+    check(advapi.LogonUserW("LocalService", "NT AUTHORITY", None, LOGON32_LOGON_SERVICE,
+                            LOGON32_PROVIDER_DEFAULT, ctypes.byref(logon)))
+    try:
+        check(advapi.CreateRestrictedToken(logon, DISABLE_MAX_PRIVILEGE, 0, None, 0, None, 0,
+                                           None, ctypes.byref(token)))
+    finally:
+        kernel.CloseHandle(logon)
+    with open(os.devnull, "rb") as nothing:
+        handles = (wintypes.HANDLE * 2)(msvcrt.get_osfhandle(nothing.fileno()),
+                                        msvcrt.get_osfhandle(output))
+        for handle in handles:
+            os.set_handle_inheritable(handle, True)
+        size = ctypes.c_size_t()
+        kernel.InitializeProcThreadAttributeList(None, 1, 0, ctypes.byref(size))
+        attributes = ctypes.create_string_buffer(size.value)
+        check(kernel.InitializeProcThreadAttributeList(attributes, 1, 0, ctypes.byref(size)))
+        try:
+            check(kernel.UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                                                   handles, ctypes.sizeof(handles), None, None))
+            startup = StartupInfo(cb=ctypes.sizeof(StartupInfo), flags=STARTF_USESTDHANDLES,
+                                  desktop="", stdin=handles[0], stdout=handles[1],
+                                  stderr=handles[1], attributes=ctypes.addressof(attributes))
+            block = "".join(f"{name}={value}\0" for name, value in sorted(env.items())) + "\0"
+            environment = ctypes.create_string_buffer(block.encode("utf-16-le"))
+            info = ProcessInformation()
+            check(advapi.CreateProcessAsUserW(
+                token, argv[0], ctypes.create_unicode_buffer(subprocess.list2cmdline(argv)),
+                None, None, True, LOCAL_SERVICE_FLAGS, environment, str(cwd),
+                ctypes.byref(startup), ctypes.byref(info)))
+        finally:
+            kernel.DeleteProcThreadAttributeList(attributes)
+            kernel.CloseHandle(token)
+            os.set_handle_inheritable(handles[1], False)
+    return LocalServiceChild(info.process, info.thread, info.pid)
