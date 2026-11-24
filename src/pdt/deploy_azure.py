@@ -889,8 +889,8 @@ def purge_vault(settings: dict[str, str]) -> None:
                 time.sleep(VAULT_PURGE_POLL_SECONDS)
                 if not az_json("keyvault", "show-deleted", "--name", vault):
                     return
-    fail(f"Azure still lists the soft-deleted Key Vault {console.value(vault)} after "
-         f"{console.value(str(VAULT_PURGES))} purges; re-run the command")
+    console.warn(f"Azure still lists the soft-deleted Key Vault {console.value(vault)} after "
+                 f"{console.value(str(VAULT_PURGES))} purges")
 
 
 def workspace_resource(settings: dict) -> dict | None:

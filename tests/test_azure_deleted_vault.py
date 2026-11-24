@@ -49,12 +49,14 @@ def test_a_vault_still_listed_after_its_purge_is_purged_again(monkeypatch):
     assert calls == [("keyvault", "purge", "--name", "pdt-abc")] * 2
 
 
-def test_a_vault_azure_never_stops_listing_fails_after_the_last_purge(monkeypatch):
+def test_a_vault_azure_never_stops_listing_warns_after_the_last_purge(monkeypatch):
     calls = recorded(monkeypatch)
+    warnings = []
     monkeypatch.setattr(deploy_azure, "az_json", lambda *args: PDT_VAULT)
-    with pytest.raises(SystemExit):
-        deploy_azure.purge_vault(SETTINGS)
+    monkeypatch.setattr(deploy_azure.console, "warn", warnings.append)
+    deploy_azure.purge_vault(SETTINGS)
     assert len(calls) == deploy_azure.VAULT_PURGES
+    assert len(warnings) == 1
 
 
 def test_someone_elses_deleted_vault_is_left_alone(monkeypatch):
