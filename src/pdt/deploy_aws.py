@@ -1321,6 +1321,9 @@ def delete_role(iam, name: str) -> None:
         role = iam.get_role(RoleName=name)["Role"]
         if not has_managed_tag(role.get("Tags", []), "Key", "Value"):
             return
+        boundary = os.environ.get(BOUNDARY_ENV)
+        if boundary:
+            iam.put_role_permissions_boundary(RoleName=name, PermissionsBoundary=boundary)
         for policy in iam.list_role_policies(RoleName=name).get("PolicyNames", []):
             iam.delete_role_policy(RoleName=name, PolicyName=policy)
         iam.delete_role(RoleName=name)
@@ -1335,6 +1338,9 @@ GRANT_SESSION_SECONDS = 3600
 GRANT_LEFT_OUT = {"iam:SimulatePrincipalPolicy"}
 GRANT_BOUNDED = ["iam:DeleteRolePolicy", "iam:PutRolePermissionsBoundary", "iam:PutRolePolicy"]
 GRANT_TAGGED = ["iam:DeleteRole", "iam:PassRole", "iam:UpdateAssumeRolePolicy"]
+# TagRole can put the managed-by tag on a pdt-* role that pdt did not make, so these actions also
+# need the boundary. AWS has no iam:PermissionsBoundary key for PassRole.
+GRANT_TAGGED_BOUNDED = ["iam:DeleteRole", "iam:UpdateAssumeRolePolicy"]
 GRANT_CREATE = ["iam:CreateRole", "iam:TagRole"]
 # AutoIDM's own roles in an account that also holds a grant.
 BACKEND_ROLES = "pdt-backend-*"
@@ -1364,18 +1370,22 @@ def grant_policy(account: str, region: str) -> dict:
     actions = sorted(set(DEPLOYER_ACTIONS) - GRANT_LEFT_OUT)
     reshaped = {*GRANT_BOUNDED, *GRANT_TAGGED, *GRANT_CREATE}
     roles = [ROLE_ARN.format(account=account)]
+    boundary = {"iam:PermissionsBoundary": grant_arns(account)["boundary"]}
     statements = []
     for statement in deployer_policy(actions, account, region)["Statement"]:
         rest = [action for action in statement["Action"] if action not in reshaped]
         if rest:
             statements.append({**statement, "Action": rest})
-        tagged = [action for action in statement["Action"] if action in GRANT_TAGGED]
-        if tagged:
-            condition = statement.get("Condition", {})
-            statements.append({**statement, "Action": tagged, "Condition": {
-                **condition, "StringEquals": {**condition.get("StringEquals", {}),
-                                              **MANAGED_TAG_CONDITION}}})
-    boundary = {"iam:PermissionsBoundary": grant_arns(account)["boundary"]}
+        for tagged, bounded in (
+                ([action for action in statement["Action"]
+                  if action in GRANT_TAGGED and action not in GRANT_TAGGED_BOUNDED], {}),
+                ([action for action in statement["Action"] if action in GRANT_TAGGED_BOUNDED],
+                 boundary)):
+            if tagged:
+                condition = statement.get("Condition", {})
+                statements.append({**statement, "Action": tagged, "Condition": {
+                    **condition, "StringEquals": {**condition.get("StringEquals", {}),
+                                                  **MANAGED_TAG_CONDITION, **bounded}}})
     statements.append({"Effect": "Allow", "Action": ["iam:CreateRole"], "Resource": roles,
                        "Condition": {**CREATE_TAG_CONDITION, "StringEquals": {
                            **CREATE_TAG_CONDITION["StringEquals"], **boundary}}})

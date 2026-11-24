@@ -134,6 +134,13 @@ def test_a_role_without_the_managed_tag_cannot_be_deleted_trusted_or_passed(acti
     assert "iam:PassedToService" in passing["Condition"]["StringEquals"]
 
 
+@pytest.mark.parametrize("action", deploy_aws.GRANT_TAGGED_BOUNDED)
+def test_a_role_without_the_boundary_cannot_be_deleted_or_trusted(action):
+    boundary = f"arn:aws:iam::{ACCOUNT}:policy/{GRANT_BOUNDARY}"
+    [statement] = allows(deploy_aws.grant_policy(ACCOUNT, "us-east-2"), action)
+    assert statement["Condition"]["StringEquals"]["iam:PermissionsBoundary"] == boundary
+
+
 @pytest.mark.parametrize("document", [
     lambda: deploy_aws.grant_policy(ACCOUNT, "us-east-2"), lambda: deploy_aws.grant_boundary(ACCOUNT)])
 def test_no_action_changes_the_identity_or_the_boundary(document):
@@ -232,6 +239,17 @@ def test_a_worker_role_gets_the_boundary_new_and_existing(monkeypatch):
     deploy_aws.ensure_role(iam, "pdt-hr", "ecs-tasks.amazonaws.com", "pdt-job", [])
     assert ("put_role_permissions_boundary",
             {"RoleName": "pdt-hr", "PermissionsBoundary": "arn:boundary"}) in iam.calls
+
+
+def test_a_worker_destroy_puts_the_boundary_on_the_role_before_it_deletes_it(monkeypatch):
+    monkeypatch.setenv(deploy_aws.BOUNDARY_ENV, "arn:boundary")
+    iam = FakeIam()
+    iam.role = {"Arn": "x", "Tags": [{"Key": "managed-by", "Value": "pdt"}]}
+    iam.list_role_policies = lambda RoleName: {"PolicyNames": []}
+    deploy_aws.delete_role(iam, "pdt-hr")
+    assert iam.calls[0] == ("put_role_permissions_boundary",
+                            {"RoleName": "pdt-hr", "PermissionsBoundary": "arn:boundary"})
+    assert iam.role is None
 
 
 def test_a_normal_role_gets_no_boundary(monkeypatch):
