@@ -93,6 +93,50 @@ def test_the_runner_claims_runs_list_with_the_credentials_and_reports(portal, mo
     assert hosted_runner.CLAIM_ENV not in __import__("os").environ
 
 
+def test_the_run_token_and_the_cloud_secrets_never_go_into_the_output(portal, monkeypatch):
+    claim(portal)
+    child(monkeypatch, "print('run-1-token secret-key-1 token-1-long')\n")
+    route = portal.routes["/v1/runner/claim"]
+
+    def with_longer_secrets(body):
+        status, answer = route(body)
+        aws = {**CREDENTIALS["aws"], "session_token": "token-1-long"}
+        return status, {**answer, "run_token": "run-1-token",
+                        "credentials": {**CREDENTIALS, "aws": aws}}
+
+    portal.routes["/v1/runner/claim"] = with_longer_secrets
+    assert hosted_runner.main([]) == 0
+    output = "".join(body["text"] for body in reports(portal) if body["fact"] == "output")
+    assert output.strip() == "*** *** ***"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the runner image is Linux")
+def test_the_artifact_zip_leaves_out_a_link_and_each_file_under_one(tmp_path):
+    secret = tmp_path / "secret.key"
+    secret.write_text("root only")
+    output = tmp_path / "job" / "output"
+    (output / "real").mkdir(parents=True)
+    (output / "real" / "r.csv").write_text("x")
+    (output / "key").symlink_to(secret)
+    (output / "folder").symlink_to(tmp_path)
+    archive = hosted_runner.zipped_folder(output, tmp_path / "artifacts.zip")
+    assert archive == tmp_path / "artifacts.zip"
+    assert zipfile.ZipFile(archive).namelist() == ["real/r.csv"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the runner image is Linux")
+def test_a_config_file_the_child_made_a_link_is_not_sent(portal, monkeypatch, tmp_path):
+    claim(portal, "deploy", {"project": "example", "app": "hr"})
+    copy_routes(portal)
+    secret = tmp_path / "secret.key"
+    secret.write_text("root only")
+    child(monkeypatch, "import os\nos.remove('pdt.yml')\n"
+                       f"os.symlink({str(secret)!r}, 'pdt.yml')\n")
+    assert hosted_runner.main([]) == 0
+    assert portal.bodies("/v1/runner/copies/start") == [] and portal.puts == []
+    assert "leads out of" in result(portal)["message"]
+
+
 def test_a_secrets_set_value_goes_on_stdin_and_never_into_the_output(portal, monkeypatch):
     claim(portal, "secrets_set", {"project": "example", "app": "hr", "name": "TOKEN"},
           value="hunter2-value")
@@ -184,6 +228,8 @@ def test_the_child_user_gets_its_own_home_and_its_credential_folder(portal, monk
     given = []
     monkeypatch.setattr(hosted_runner, "give_folder", lambda path, user: given.append((path, user)))
     monkeypatch.setattr(hosted_runner, "user_home", lambda user: f"/home/{user}")
+    monkeypatch.setattr(hosted_runner, "end_processes", lambda user: given.append(("end", user)))
+    monkeypatch.setattr(hosted_runner.os, "chmod", lambda path, mode: given.append((mode, path)))
     monkeypatch.setenv("HOME", "/root")
     monkeypatch.setenv("UV_CACHE_DIR", "/root/.cache/uv")
     seen = {}
@@ -197,7 +243,9 @@ def test_the_child_user_gets_its_own_home_and_its_credential_folder(portal, monk
     child(monkeypatch, "print('ok')")
     assert hosted_runner.main([]) == 0
     assert seen["env"]["HOME"] == "/home/pdtjob" and "UV_CACHE_DIR" not in seen["env"]
-    assert (folder, "pdtjob") in given
+    assert (folder, "pdtjob") in given and ("end", "pdtjob") in given
+    work = next(path for mode, path in given if mode == 0o711)
+    assert (work / "job", "pdtjob") in given and result(portal)["outcome"] == "done"
 
 
 def test_a_silent_child_still_learns_of_a_cancel(portal, monkeypatch):

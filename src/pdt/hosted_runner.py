@@ -4,8 +4,11 @@ The task's environment holds the command ID, the API URL, and a one-time claim t
 (PDT_COMMAND_ID, PDT_API_URL, PDT_RUNNER_CLAIM). The runner removes them from its environment,
 claims the command at `/v1/runner/claim`, and gets the operation, its args, its run limit, a run
 token, one hour of credentials for the one place, the current copy of the project, and the command
-input. It writes the copy into a new folder and runs pdt there as a child, as USER when it runs as
-root, with an allow list of env vars and the credentials, and nothing else of its own environment.
+input. It writes the copy into `job/` of a new folder and runs pdt there as a child, as USER when
+it runs as root, with an allow list of env vars and the credentials, and nothing else of its own
+environment. USER owns only `job/`: the log and the zip of the output folder stay in the folder of
+root, the child writes the log through the file it gets as its output, and pdt reads no link that
+USER made in `job/`. When the child ends, pdt ends each process of USER before it reads `job/`.
 It sends the output each OUTPUT_SECONDS to `/v1/runner/report`, stops the child when the answer
 says `cancel`, sends AutoIDM each unit of the copy whose `pdt.yml` or `<app>/pdt.yml` the
 child changed (`save_config`), uploads the log and, for `artifacts` and `run_mr`, the output folder, and reports
@@ -52,6 +55,7 @@ USER_PATHS = ("HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "UV_CACHE_DIR", "UV_PYT
 KEEP_SECRET_OPERATIONS = ("deploy", "plan")
 USER = "pdtjob"
 MR_RUN = "mr-run"
+SECRET_CREDENTIALS = ("secret_access_key", "session_token", "federated_token", "access_token")
 
 
 class Runner:
@@ -70,9 +74,10 @@ class Runner:
     def report(self, **facts) -> dict:
         return self.post("/v1/runner/report", {"command_id": self.command_id, **facts})
 
-    def upload(self, kind: str, filename: str, data: bytes) -> str:
+    def upload(self, kind: str, filename: str, data: bytes | Path) -> str:
+        size = data.stat().st_size if isinstance(data, Path) else len(data)
         place = self.post("/v1/runner/uploads", {"command_id": self.command_id, "kind": kind,
-                                                  "filename": filename, "size": len(data)})
+                                                  "filename": filename, "size": size})
         autoidm.post_file(place, filename, data, "/v1/runner/uploads")
         return place["key"]
 
@@ -144,15 +149,35 @@ def give_folder(folder: Path, user: str) -> None:
             os.chown(Path(parent, name), uid, -1, follow_symlinks=False)
 
 
-def zipped_folder(folder: Path) -> bytes | None:
-    files = [path for path in sorted(folder.rglob("*")) if path.is_file()] if folder.is_dir() else []
+def end_processes(user: str) -> None:
+    import pwd
+    uid = pwd.getpwnam(user).pw_uid
+    pid = os.fork()
+    if pid == 0:
+        try:
+            os.setuid(uid)
+            os.kill(-1, signal.SIGKILL)
+        finally:
+            os._exit(0)
+    os.waitpid(pid, 0)
+
+
+def zipped_folder(folder: Path, archive: Path) -> Path | None:
+    files = []
+    if folder.is_dir() and not folder.is_symlink():
+        for path in sorted(folder.rglob("*")):
+            try:
+                found = copies.inside(folder, path.relative_to(folder).as_posix())
+            except copies.CopyError:
+                continue
+            if found.is_file():
+                files.append(found)
     if not files:
         return None
-    archive = folder.with_name("artifacts.zip")
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED, strict_timestamps=False) as out:
         for path in files:
             out.write(path, path.relative_to(folder).as_posix())
-    return archive.read_bytes()
+    return archive
 
 
 def send_output(runner: Runner, log: Path, offset: int, secrets: list[bytes],
@@ -176,8 +201,9 @@ def send_output(runner: Runner, log: Path, offset: int, secrets: list[bytes],
 def run(runner: Runner, answer: dict, work: Path) -> dict:
     operation, args, limit = checked(answer)
     stop_at(limit + GRACE_SECONDS)
-    project = work / "project"
-    project.mkdir()
+    job = work / "job"
+    project = job / "project"
+    project.mkdir(parents=True)
     write_copy(answer, project)
     if operation == "run_mr":
         units = (answer.get("copy") or {}).get("units") or [{}]
@@ -192,7 +218,7 @@ def run(runner: Runner, answer: dict, work: Path) -> dict:
         state.write_text(json.dumps({"deployed": [app]}) + "\n", encoding="utf-8")
     credentials = grants.credentials(answer["place"], answer.get("credentials") or {})
     extra = {"PDT_RUN_ID": runner.command_id}
-    output = work / "output"
+    output = job / "output"
     argv = service_commands.command_line(operation, args)
     if operation == "artifacts":
         argv.append(str(output))
@@ -213,13 +239,18 @@ def run(runner: Runner, answer: dict, work: Path) -> dict:
     base = dict(os.environ)
     user = run_user()
     if user:
-        give_folder(work, user)
+        os.chmod(work, 0o711)
+        give_folder(job, user)
         if grants.GRANT_FOLDER_ENV in credentials:
             give_folder(Path(credentials[grants.GRANT_FOLDER_ENV]), user)
         base = {name: text for name, text in base.items() if name not in USER_PATHS}
         base["HOME"] = user_home(user)
     log = work / "output.log"
-    secrets = service_runner.secret_values([value] if isinstance(value, str) else [])
+    found = answer.get("credentials") or {}
+    cloud = found.get(found.get("provider")) if isinstance(found, dict) else None
+    known = [value, runner.run_token, *(cloud.get(name) for name in SECRET_CREDENTIALS
+                                        if isinstance(cloud, dict))]
+    secrets = service_runner.secret_values([text for text in known if isinstance(text, str)])
     units = [] if operation == "run_mr" else (answer.get("copy") or {}).get("units") or []
     before = read_config(project, units)
     try:
@@ -227,6 +258,8 @@ def run(runner: Runner, answer: dict, work: Path) -> dict:
             base, project, credentials, extra), log, value, user, limit, secrets)
     finally:
         service_runner.remove_folder(credentials.get(grants.GRANT_FOLDER_ENV))
+        if user:
+            end_processes(user)
     problem = save_config(runner, project, units, before, log)
     message = message or problem
     size = log.stat().st_size if log.is_file() else 0
@@ -245,9 +278,9 @@ def run(runner: Runner, answer: dict, work: Path) -> dict:
     if data and upload:
         log_key = runner.upload("log", f"{runner.command_id}.log", data)
     if (operation, outcome) in (("artifacts", "done"), ("run_mr", "done"), ("run_mr", "failed")):
-        zipped = zipped_folder(output)
-        if zipped is not None and len(zipped) <= managed_services.MAX_UPLOAD_BYTES:
-            artifact_key = runner.upload("artifact", service_runner.ARTIFACT_NAME, zipped)
+        archive = zipped_folder(output, work / service_runner.ARTIFACT_NAME)
+        if archive is not None and archive.stat().st_size <= managed_services.MAX_UPLOAD_BYTES:
+            artifact_key = runner.upload("artifact", service_runner.ARTIFACT_NAME, archive)
     return service_runner.result_of(outcome, code, message, runner.command_id, artifact_key,
                                     log_key)
 
@@ -262,7 +295,7 @@ def config_path(project: Path, unit: str) -> str:
 def read_config(project: Path, units: list[dict]) -> dict[str, bytes | None]:
     found = {}
     for entry in units:
-        path = project / config_path(project, entry["unit"])
+        path = copies.inside(project, config_path(project, entry["unit"]))
         found[entry["unit"]] = path.read_bytes() if path.is_file() else None
     return found
 
@@ -276,15 +309,15 @@ def save_config(runner: Runner, project: Path, units: list[dict],
     problem = None
     for entry in units:
         unit, relative = entry["unit"], config_path(project, entry["unit"])
-        path = project / relative
-        text = path.read_bytes() if path.is_file() else None
-        if text == before[unit]:
-            continue
         try:
+            path = copies.inside(project, relative)
+            text = path.read_bytes() if path.is_file() else None
+            if text == before[unit]:
+                continue
             paths = {item["path"] for item in entry["files"]} - {relative}
             if text is not None:
                 paths.add(relative)
-            files = [{"path": name, "size": (project / name).stat().st_size}
+            files = [{"path": name, "size": copies.inside(project, name).stat().st_size}
                      for name in sorted(paths)]
             data = copies.build_zip(project, files)
             digest = hashlib.sha256(data).hexdigest()

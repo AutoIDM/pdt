@@ -184,7 +184,7 @@ def build_zip(root: Path, files: list[dict]) -> bytes:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zipped:
         for entry in files:
-            data = Path(long_path(root / entry["path"])).read_bytes()
+            data = Path(long_path(inside(root, entry["path"]))).read_bytes()
             if len(data) != entry["size"]:
                 raise CopyError(f"{entry['path']} changed while pdt read the project. "
                                 "Run the command again.")
@@ -284,8 +284,17 @@ def unpack(data: bytes, entry: dict, target: Path) -> None:
 
 
 def inside(root: Path, relative: str) -> Path:
+    """`root / relative` when no part of it is a link and it stays in `root`."""
     path = root / relative
-    if not path.resolve().is_relative_to(root.resolve()) or path.is_symlink():
+    parts = Path(relative).parts
+    try:
+        leaves = (any(is_link(Path(long_path(root.joinpath(*parts[:end]))))
+                      for end in range(1, len(parts) + 1))
+                  or not Path(long_path(path)).resolve().is_relative_to(
+                      Path(long_path(root)).resolve()))
+    except (OSError, RuntimeError):
+        leaves = True
+    if leaves:
         raise CopyError(f"{relative} leads out of {root}")
     return path
 

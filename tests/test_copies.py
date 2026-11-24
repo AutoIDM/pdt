@@ -172,6 +172,17 @@ def test_a_copy_whose_files_pass_the_byte_limit_writes_nothing(tmp_path, monkeyp
     assert not (tmp_path / "out").exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="a link needs a privilege on Windows")
+def test_inside_refuses_a_path_under_a_linked_folder(tmp_path):
+    (tmp_path / "outside").mkdir()
+    (tmp_path / "root").mkdir()
+    (tmp_path / "root" / "folder").symlink_to(tmp_path / "outside")
+    with pytest.raises(copies.CopyError, match="leads out of"):
+        copies.inside(tmp_path / "root", "folder/x.txt")
+    with pytest.raises(copies.CopyError, match="leads out of"):
+        copies.build_zip(tmp_path / "root", [{"path": "folder/x.txt", "size": 0}])
+
+
 def test_a_copy_that_names_another_customer_is_refused():
     assert "cus_other" in copies.customer_problem(
         b"managed_services:\n  customer: cus_other\n", "cus_mine")
