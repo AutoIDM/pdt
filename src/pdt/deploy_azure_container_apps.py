@@ -62,7 +62,7 @@ from pdt.deploy_azure import (
     destroy_group, disable_old_secret_versions, exchange_rate, ensure_group, ensure_group_and_vault,
     ensure_secret, ensure_store, ensure_workspace, group_can_be_deleted, held_token_store, list_remaining,
     managed_by_pdt, managed_secret, note_if_unreadable, other_pdt_apps, owned_by, preflight,
-    portal_url, purge_secret, report_shared_kept, require_managed, resource_id, retail_price,
+    portal_url, purge_secret, purge_vault, report_shared_kept, require_managed, resource_id, retail_price,
     revoke_role, run_basis, run_quiet, secret_actions, secret_name,
     secret_reads, secret_scope, secret_state, secret_versions, store_condition, store_description,
     store_exists, store_plan, store_reads, store_settings, store_url, store_usage, workspace_keys,
@@ -1459,9 +1459,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
         if grant:
             revoke_role(store["container_id"], principal_id, STORE_ROLE)
         if orphan_vault:
-            console.step(f"purging soft-deleted Key Vault {console.value(settings['vault'])}")
-            run_quiet("keyvault", "purge", "--name", settings["vault"],
-                      slow=f"purging: Key Vault {console.value(settings['vault'])}")
+            purge_vault(settings)
         if group_exists and not destroy_group(settings, name):
             # Another app joined the group meanwhile, so this one leaves the
             # way it would have with a sibling: its own job, image, and secret.

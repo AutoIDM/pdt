@@ -5,11 +5,16 @@ from pdt import deploy_azure
 SETTINGS = {"vault": "pdt-abc"}
 
 
-def recorded(monkeypatch, deleted):
+PDT_VAULT = {"properties": {"tags": {"managed-by": "pdt"}}}
+
+
+def recorded(monkeypatch, *deleted):
     calls = []
-    monkeypatch.setattr(deploy_azure, "az_json", lambda *args: deleted)
+    answers = list(deleted)
+    monkeypatch.setattr(deploy_azure, "az_json", lambda *args: answers.pop(0) if answers else None)
     monkeypatch.setattr(deploy_azure, "run_quiet",
                         lambda *args, **kwargs: calls.append(args) or "")
+    monkeypatch.setattr(deploy_azure.time, "sleep", lambda seconds: None)
     return calls
 
 
@@ -32,9 +37,26 @@ def test_no_deleted_vault_means_nothing_to_purge(monkeypatch):
 
 
 def test_a_pdt_vault_in_soft_delete_is_purged(monkeypatch):
-    calls = recorded(monkeypatch, {"properties": {"tags": {"managed-by": "pdt"}}})
+    calls = recorded(monkeypatch, PDT_VAULT)
     deploy_azure.purge_deleted_vault(SETTINGS)
     assert calls == [("keyvault", "purge", "--name", "pdt-abc")]
+
+
+def test_a_vault_still_listed_after_its_purge_is_purged_again(monkeypatch):
+    monkeypatch.setattr(deploy_azure, "VAULT_PURGE_POLLS", 2)
+    calls = recorded(monkeypatch, PDT_VAULT, PDT_VAULT, PDT_VAULT)
+    deploy_azure.purge_deleted_vault(SETTINGS)
+    assert calls == [("keyvault", "purge", "--name", "pdt-abc")] * 2
+
+
+def test_a_vault_azure_never_stops_listing_warns_after_the_last_purge(monkeypatch):
+    calls = recorded(monkeypatch)
+    warnings = []
+    monkeypatch.setattr(deploy_azure, "az_json", lambda *args: PDT_VAULT)
+    monkeypatch.setattr(deploy_azure.console, "warn", warnings.append)
+    deploy_azure.purge_vault(SETTINGS)
+    assert len(calls) == deploy_azure.VAULT_PURGES
+    assert len(warnings) == 1
 
 
 def test_someone_elses_deleted_vault_is_left_alone(monkeypatch):
@@ -62,9 +84,11 @@ def test_destroy_does_not_purge_another_groups_legacy_vault(monkeypatch):
                         lambda *args, **kwargs: calls.append(args))
     monkeypatch.setattr(deploy_azure, "delete_unless_locked",
                         lambda *args, **kwargs: calls.append(args) or "")
+    monkeypatch.setattr(deploy_azure, "purge_vault",
+                        lambda settings: calls.append(("purge", settings["vault"])))
     assert deploy_azure.destroy_group(settings, "report") is True
     assert reads == [("keyvault", "show-deleted", "--name", "pdt-current")]
     assert calls == [
         ("group", "delete", "--name", "pdt-verify", "--yes"),
-        ("keyvault", "purge", "--name", "pdt-current"),
+        ("purge", "pdt-current"),
     ]
