@@ -902,17 +902,41 @@ def refuse_profile_change(app: dict, found: str, command: str) -> None:
              f"{console.value(f'pdt {command} {app['name']}')} again")
 
 
-def pdt_services(project: str, region: str) -> list[str]:
-    """The Cloud Run services pdt made in the project, in every region: the web apps.
+UNREACHABLE_REGIONS = re.compile(r"Cloud Run regions did not respond: ([^.]+)\.")
+
+
+def all_regions_run_list(kind: str, project: str, region: str) -> tuple[list, bool]:
+    """The Cloud Run jobs or services in regions other than `region`, and whether any other
+    region did not respond.
+
+    `gcloud run <kind> list --project` exits 0 and writes a warning to stderr when a region
+    does not respond, so the second value is True whenever another region was omitted.
+    """
+    proc = gcloud("run", kind, "list", "--project", project, "--format=json")
+    if proc.returncode != 0:
+        console.say(console.escape(proc.stderr.strip()))
+        command = f"pdt gcloud run {kind} list"
+        fail(f"{console.value(command)} failed; fix the problem above and re-run the deploy")
+    items = other_region_items(json.loads(proc.stdout or "[]"), region)
+    stderr = proc.stderr or ""
+    match = UNREACHABLE_REGIONS.search(stderr)
+    if match:
+        unreachable = {name.strip() for name in match.group(1).split(",") if name.strip()}
+        return items, bool(unreachable - {region})
+    return items, "List results may be incomplete" in stderr
+
+
+def pdt_services(project: str, region: str) -> tuple[list[str], bool]:
+    """The Cloud Run services pdt made in the project, in every region, and whether any other
+    region did not respond.
 
     The all-regions list can leave out a service that the list of `region` shows, so the
     services in `region` come from that list.
     """
-    items = (list_json("run", "services", "list", "--region", region, "--project", project)
-             + other_region_items(list_json("run", "services", "list", "--project", project),
-                                  region))
+    other_items, incomplete = all_regions_run_list("services", project, region)
+    items = list_json("run", "services", "list", "--region", region, "--project", project) + other_items
     return [((item.get("metadata") or {}).get("name") or "")
-            for item in items if managed_by_pdt(item)]
+            for item in items if managed_by_pdt(item)], incomplete
 
 
 def other_region_items(items: list, region: str) -> list:
@@ -1454,8 +1478,8 @@ def destroy(app: dict, assume_yes: bool) -> int:
         ]
         # The all-regions list can leave out a job that the regional list shows, so the jobs
         # in this region come from the regional list.
-        other_project_jobs = other_regional_jobs + other_region_items(
-            list_json("run", "jobs", "list", "--project", project), region)
+        other_region_jobs, jobs_incomplete = all_regions_run_list("jobs", project, region)
+        other_project_jobs = other_regional_jobs + other_region_jobs
         other_jobs = [
             run_job_identity(item)[0]
             for item in other_project_jobs
@@ -1475,13 +1499,18 @@ def destroy(app: dict, assume_yes: bool) -> int:
                        and not unmanaged_app_resource)
         delete_image = bool(app_images) and not delete_repo
         delete_sa = (sa == default_sa and service_account_owned(service_account)
-                     and not other_project_jobs and not unmanaged_app_resource)
+                     and not other_project_jobs and not jobs_incomplete
+                     and not unmanaged_app_resource)
         builder = builder_email(project)
         builder_account = service_account_or_none(project, builder)
         builds = build_bucket(project)
         builds_bucket = read_json_or_none("storage", "buckets", "describe", f"gs://{builds}")
         # A web app is a Cloud Run service; it shares the builder and the build bucket.
-        last_app = (not other_project_jobs and not pdt_services(project, region)
+        services, services_incomplete = pdt_services(project, region)
+        if jobs_incomplete or services_incomplete:
+            console.note("Some Cloud Run regions did not respond; keeping shared project resources")
+        last_app = (not other_project_jobs and not services
+                    and not jobs_incomplete and not services_incomplete
                     and not unmanaged_app_resource)
         delete_builder = last_app and builder_owned(builder_account)
         delete_builds = last_app and managed_by_pdt(builds_bucket)

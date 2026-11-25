@@ -833,12 +833,15 @@ def destroy(app: dict, assume_yes: bool) -> int:
         delete_repo = gc.managed_by_pdt(repository) and not other_images
         delete_image = any(gc.image_name(item) == name for item in images) and not delete_repo
         # The builder and the build bucket go with the last of the project's jobs and web apps.
+        other_region_jobs, jobs_incomplete = gc.all_regions_run_list("jobs", project, region)
         jobs = (gc.list_json("run", "jobs", "list", "--region", region, "--project", project)
-                + gc.other_region_items(gc.list_json("run", "jobs", "list", "--project", project),
-                                        region))
+                + other_region_jobs)
+        services, services_incomplete = gc.pdt_services(project, region)
+        if jobs_incomplete or services_incomplete:
+            console.note("Some Cloud Run regions did not respond; keeping shared project resources")
         last_app = (not [item for item in jobs if gc.managed_by_pdt(item)]
-                    and not [other for other in gc.pdt_services(project, region)
-                             if other != service])
+                    and not [other for other in services if other != service]
+                    and not jobs_incomplete and not services_incomplete)
         builder = gc.builder_email(project)
         builder_account = gc.service_account_or_none(project, builder)
         builds = gc.build_bucket(project)
