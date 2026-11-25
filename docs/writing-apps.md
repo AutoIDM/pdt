@@ -21,6 +21,8 @@ def main() -> int:
 
 The pinned version is the pdt version the app runs with, on your computer and in a deployed job. Upgrading pdt on your computer does not change it. Keep the pin at the newest pdt release, and run `pdt deploy APP` after you raise it, so the deployed job uses it too.
 
+Each run gets an empty folder in `PDT_OUTPUT_DIR`. When the run ends, pdt copies every file the app left there to `runs/<time>-<run id>/` in the app's data store, on your computer and in every deployed job, so `pdt storage APP ls runs` lists them. An app that sends its own run folder with `storage.sync()` keeps that folder, and pdt does not send the files again.
+
 ## PowerShell apps
 
 A folder of `.ps1` files with no `run.py` is a PowerShell app: pdt reads the scripts to find the modules to install, then runs the entry scripts in name order through pwsh. Before `pdt run` starts the scripts on your computer, pdt installs each of those modules that is missing or at another version into its own folder (`~/.local/share/pdt/powershell-modules`, or `%LOCALAPPDATA%\pdt\powershell-modules` on Windows), so a local run loads the same versions a deploy installs. Other PowerShell sessions do not see that folder, and deleting it removes the modules.

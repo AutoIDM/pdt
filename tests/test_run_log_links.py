@@ -32,7 +32,7 @@ def test_every_azure_portal_link_names_the_tenant(monkeypatch):
                                           "container": "pdt"})
     monkeypatch.setattr(deploy_azure, "cli_credential_store", lambda settings, name: None)
     monkeypatch.setattr(deploy_azure.storage_cli, "run",
-                        lambda store, app, rest, assume_yes, page: pages.append(page) or 0)
+                        lambda store, app, rest, assume_yes, page, **_kwargs: pages.append(page) or 0)
     deploy_azure.storage({"name": "hello-world"}, AZURE, ["--open"], False)
     links = [job_history_url(AZURE, "pdt-hello-world"), logs_query_url(AZURE, "pdt-hello-world"),
              logs_query_url(AZURE, "pdt-hello-world", "pdt-hello-world-abc12"), *pages]

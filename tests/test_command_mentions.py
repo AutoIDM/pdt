@@ -7,6 +7,7 @@ and the like), and each "run pdt ..." or "with: pdt ..." in a message. The check
 is the subcommand, its --options, and the action of `pdt storage` and `pdt secrets`.
 """
 
+import argparse
 import ast
 import re
 from pathlib import Path
@@ -19,9 +20,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "src" / "pdt"
 DOCS = [ROOT / "README.md", ROOT / "AGENTS.md", ROOT / "verify" / "README.md",
         *sorted((ROOT / "docs").rglob("*.md"))]
-# Backticked text that starts with "pdt " but is not a command: README's
-# mistyped command, and the display name of the Google Cloud service account.
-NOT_COMMANDS = {"pdt lgos", "pdt job runner"}
+NOT_COMMANDS = {"pdt lgos", "pdt job runner", "pdt jobs in {}?"}
 COMMAND_CALLS = {"command", "field", "next_steps", "deployed_next_steps"}
 SPAN = re.compile(r"`(pdt [^`]+)`")
 SAID = re.compile(r"(?i:\brun|\bwith:?|\bexample:?)\s+(pdt [^`;,)\n]+)")
@@ -116,6 +115,10 @@ def problem(command: str) -> str:
         return ""
     rest = [word.strip("[](),.") for word in words[2:]]
     allowed = set(sub._option_string_actions)
+    for action in sub._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            for nested in action.choices.values():
+                allowed |= set(nested._option_string_actions)
     if name == "storage":
         allowed |= set(re.findall(r"--[a-z-]+", storage_cli.USAGE))
     for word in rest:

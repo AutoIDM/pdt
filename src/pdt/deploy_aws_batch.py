@@ -33,6 +33,7 @@ from __future__ import annotations
 import base64
 import dataclasses
 import json
+import os
 import shutil
 import subprocess
 import time
@@ -55,11 +56,13 @@ from pdt.deploy_aws import (
     console_note, console_url, log_group_url,
     delete_if_present, error_code, not_found,
     delete_schedule_group, other_schedules, preflight, resource_exists, retry, secret_statements,
-    store_cost, store_exists, store_statements, store_url, with_role_propagation_retry,
+    ROLE_PROPAGATION_DELAYS, store_cost, store_exists, store_statements, store_url,
+    with_role_propagation_retry,
 )
 from pdt.deploy_common import (
     BUILD_TAG, CostEstimate, build_in_cloud, ensure_image, fail, gather_secrets, image_action,
-    run_build, run_secrets, secret_contents, ssh_build_args, store_kept_line,
+    keep_paused, keeps_secret, make_registration, registration_secrets, run_build, run_secrets, secret_contents,
+    ignore_sigterm, ssh_build_args, stop_on_sigterm, store_kept_line,
     store_name, store_plan_lines, store_suffix, warn_if_locked,
 )
 
@@ -74,6 +77,7 @@ FARGATE_MIN_SECONDS = 60
 COMPUTE_MAX_VCPUS = 16
 SUBMIT_JOB_TARGET = "arn:aws:scheduler:::aws-sdk:batch:submitJob"
 JOB_STATUSES = {"SUCCEEDED": "succeeded", "FAILED": "failed"}
+MR_ENV_NAMES = ("PDT_RUN_ID", "PDT_APP_ARGS")
 BATCH_WAIT_DELAYS = (2, 3, 5, 5, 10, 10, 15, 15, 15, *[30] * 18)
 # Measured in October 2026: CloudWatch Logs showed a line at most 7.0 s after the write.
 HOLD = timedelta(seconds=10)
@@ -91,6 +95,7 @@ BATCH_ACTIONS = [
     "batch:RegisterJobDefinition",
     "batch:SubmitJob",
     "batch:TagResource",
+    "batch:TerminateJob",
     "batch:UpdateComputeEnvironment",
     "batch:UpdateJobQueue",
     "ec2:CreateSecurityGroup",
@@ -418,6 +423,9 @@ def ensure_roles(iam, names: dict[str, str], account: str, region: str,
         iam, names["scheduler_role"], "scheduler.amazonaws.com", "pdt-scheduler", [
             {"Effect": "Allow", "Action": ["batch:SubmitJob"],
              "Resource": submit_job_resources(names, account, region)},
+            {"Effect": "Allow", "Action": ["batch:TagResource"],
+             "Resource": f"arn:aws:batch:{region}:{account}:job/*",
+             "Condition": {"StringEquals": {"aws:RequestTag/managed-by": "pdt"}}},
         ])
     return execution, job, scheduler
 
@@ -539,6 +547,7 @@ def submit_job_target(names: dict[str, str]) -> dict:
             "JobName": names["job_definition"],
             "JobQueue": JOB_QUEUE.name,
             "JobDefinition": names["job_definition"],
+            "Tags": MANAGED_TAGS,
         }, sort_keys=True),
     }
 
@@ -612,7 +621,7 @@ def desired_build_project(role_arn: str) -> dict:
 def ensure_build_resources(clients: dict, account: str, region: str, bucket: str,
                            project: dict | None) -> None:
     ensure_log_group(clients["logs"], BUILD_LOG_GROUP)
-    ensure_store(clients["s3"], bucket, region, MANAGED_TAGS)
+    ensure_store(clients["s3"], bucket, account, region, MANAGED_TAGS)
     clients["s3"].put_bucket_lifecycle_configuration(Bucket=bucket, LifecycleConfiguration={
         "Rules": [{"ID": "pdt-expire-build-uploads", "Status": "Enabled",
                    "Filter": {"Prefix": ""}, "Expiration": {"Days": 1}}]})
@@ -681,6 +690,14 @@ def failed_phase(build: dict) -> tuple[str, str]:
     return build.get("currentPhase", "unknown"), build.get("buildStatus", "unknown")
 
 
+def role_not_ready(build: dict) -> bool:
+    """IAM takes some seconds to give a new service role its rights, and until then CodeBuild
+    fails the build while it is queued."""
+    phase, reason = failed_phase(build)
+    return (build.get("buildStatus") != "SUCCEEDED" and phase == "QUEUED"
+            and "service role" in reason.lower())
+
+
 def codebuild_build(stage: Path, image: str, clients: dict, bucket: str, app_name: str) -> None:
     """Build and push `image` from `stage` with one CodeBuild build."""
     key = f"{app_name}/{uuid.uuid4().hex}.zip"
@@ -690,13 +707,20 @@ def codebuild_build(stage: Path, image: str, clients: dict, bucket: str, app_nam
     finally:
         archive.unlink(missing_ok=True)
     try:
-        build = clients["codebuild"].start_build(
-            projectName=BUILD_PROJECT, sourceTypeOverride="S3",
-            sourceLocationOverride=f"{bucket}/{key}", buildspecOverride=BUILDSPEC,
-            environmentVariablesOverride=[{"name": "IMAGE", "value": image,
-                                           "type": "PLAINTEXT"}])["build"]
-        console.status(f"CodeBuild build {console.value(build['id'])} started; its log follows.")
-        build = follow_build(clients["codebuild"], clients["logs"], build["id"])
+        for delay in (*ROLE_PROPAGATION_DELAYS, None):
+            build = clients["codebuild"].start_build(
+                projectName=BUILD_PROJECT, sourceTypeOverride="S3",
+                sourceLocationOverride=f"{bucket}/{key}", buildspecOverride=BUILDSPEC,
+                environmentVariablesOverride=[{"name": "IMAGE", "value": image,
+                                               "type": "PLAINTEXT"}])["build"]
+            console.status(f"CodeBuild build {console.value(build['id'])} started; "
+                           "its log follows.")
+            build = follow_build(clients["codebuild"], clients["logs"], build["id"])
+            if delay is None or not role_not_ready(build):
+                break
+            console.status(f"The new CodeBuild service role is not ready yet, so pdt starts "
+                           f"the build again in {delay} seconds.")
+            time.sleep(delay)
     finally:
         clients["s3"].delete_object(Bucket=bucket, Key=key)
     if build["buildStatus"] != "SUCCEEDED":
@@ -705,7 +729,7 @@ def codebuild_build(stage: Path, image: str, clients: dict, bucket: str, app_nam
              f"{console.value(phase)}: {console.escape(reason)}. The build log is above.")
 
 
-def build_cleanup(clients: dict, bucket: str) -> list[tuple[str, Callable]]:
+def build_cleanup(clients: dict, account: str, bucket: str) -> list[tuple[str, Callable]]:
     """One plan line and its action per CodeBuild resource that exists and that pdt manages."""
     plan = []
     project = build_project(clients["codebuild"])
@@ -718,18 +742,18 @@ def build_cleanup(clients: dict, bucket: str) -> list[tuple[str, Callable]]:
     if resource_exists(clients["iam"], "get_role", RoleName=BUILD_ROLE):
         plan.append((console.Markup(f"delete tagged IAM role {console.value(BUILD_ROLE)}"),
                      lambda: delete_role(clients["iam"], BUILD_ROLE)))
-    if store_exists(clients["s3"], bucket):
+    if store_exists(clients["s3"], bucket, account):
         plan.append((console.Markup(f"delete tagged S3 bucket {console.value(bucket)} and the "
                                     "build uploads in it"),
-                     lambda: delete_build_bucket(clients["s3"], bucket)))
+                     lambda: delete_build_bucket(clients["s3"], bucket, account)))
     if find_log_group(clients["logs"], BUILD_LOG_GROUP) is not None:
         plan.append((console.Markup(f"delete tagged log group {console.value(BUILD_LOG_GROUP)}"),
                      lambda: delete_log_group(clients["logs"], BUILD_LOG_GROUP)))
     return plan
 
 
-def delete_build_bucket(s3, name: str) -> None:
-    if not store_exists(s3, name):
+def delete_build_bucket(s3, name: str, account: str) -> None:
+    if not store_exists(s3, name, account):
         return
     if not has_managed_tag(s3.get_bucket_tagging(Bucket=name).get("TagSet", []), "Key", "Value"):
         return
@@ -789,15 +813,15 @@ def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -
         clients["sts"], clients["iam"], expected_account, region, DEPLOYER_ACTIONS)
     wait_for_permissions()
     client = clients["secretsmanager"]
-    name = resource_names(app["name"])["secret"]
+    secret = resource_names(app["name"])["secret"]
     current = None
     with console.waiting("reading: resources"):
-        if resource_exists(client, "describe_secret", SecretId=name):
-            current = client.get_secret_value(SecretId=name).get("SecretString", "")
+        if resource_exists(client, "describe_secret", SecretId=secret):
+            current = client.get_secret_value(SecretId=secret).get("SecretString", "")
 
     def write(values: dict[str, str]) -> None:
-        console.step(f"updating secret {console.value(name)}")
-        ensure_secret(client, name, json.dumps(values, sort_keys=True))
+        console.step(f"updating secret {console.value(secret)}")
+        ensure_secret(client, secret, json.dumps(values, sort_keys=True))
 
     return run_secrets(action, app, current, write, assume_yes, name)
 
@@ -814,7 +838,6 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     cron = config.cron_expression(app["schedule"])
     expression = aws_schedule_expression(cron)
     secrets = gather_secrets(app)
-    payload = json.dumps(secrets, sort_keys=True)
     image = f"{account}.dkr.ecr.{region}.amazonaws.com/{REPOSITORY}:{names['image_tag']}"
     bucket = store_name(account)
     store = deployer_store(app, session, account) if app["storage"] else None
@@ -822,7 +845,7 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     console.status(f"Checking current state in account {console.value(account)} "
                    f"({console.value(region)})...")
     with console.waiting("reading: resources"):
-        store_present = store_exists(clients["s3"], bucket) if store else False
+        store_present = store_exists(clients["s3"], bucket, account) if store else False
         usage = (store.usage() if store_present else (0, 0)) if store else None
         vpc_id, subnets = default_network(clients["ec2"])
         group = find_security_group(clients["ec2"], vpc_id)
@@ -834,8 +857,19 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         schedule_exists = resource_exists(
             clients["scheduler"], "get_schedule",
             Name=names["schedule"], GroupName=SCHEDULE_GROUP)
+        keep_paused(app, schedule_exists, lambda: clients["scheduler"].get_schedule(
+            Name=names["schedule"], GroupName=SCHEDULE_GROUP).get("State") == "DISABLED")
         secret_exists = resource_exists(
             clients["secretsmanager"], "describe_secret", SecretId=names["secret"])
+        current_secret = None
+        if secret_exists and not keeps_secret():
+            try:
+                current_secret = clients["secretsmanager"].get_secret_value(
+                    SecretId=names["secret"]).get("SecretString")
+            except Exception as exc:
+                if not not_found(exc):
+                    raise
+        secrets.update(registration_secrets(current_secret))
         uploads = build_bucket(account, region)
         revisions = [item for item in active_job_definitions(clients["batch"], names["job_definition"])
                      if managed(item)]
@@ -844,7 +878,7 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         if cloud:
             project = build_project(clients["codebuild"])
             build_role_exists = resource_exists(clients["iam"], "get_role", RoleName=BUILD_ROLE)
-            uploads_present = store_exists(clients["s3"], uploads)
+            uploads_present = store_exists(clients["s3"], uploads, account)
             build_log_present = find_log_group(clients["logs"], BUILD_LOG_GROUP) is not None
     actions = [
         console.Markup(f"reconcile shared ECR repository {console.value(REPOSITORY)}, Batch "
@@ -852,7 +886,9 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
                        f"queue {console.value(JOB_QUEUE.name)}"),
         image_action(app, console.Markup(f"build and push Docker image {console.value(image)} "
                                          f"({DOCKER_PLATFORM})"), "CodeBuild" if cloud else ""),
-        console.Markup(("update" if secret_exists else "create")
+        console.Markup(f"keep Secrets Manager secret {console.value(names['secret'])} as it is"
+                       if keeps_secret() and secret_exists else
+                       ("update" if secret_exists else "create")
                        + f" Secrets Manager secret {console.value(names['secret'])} "
                        f"({secret_contents(secrets)})"),
         "reconcile the execution, job, and scheduler IAM roles",
@@ -910,13 +946,16 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         clients["batch"], subnets, security_group, move_environment)
     ensure_job_queue(clients["batch"], environment_arn)
     ensure_log_group(clients["logs"], names["log_group"])
-    secret_arn = ensure_secret(clients["secretsmanager"], names["secret"], payload)
+    secrets = make_registration(secrets, {"provider": "aws", "account": account,
+                                          "region": region})
+    secret_arn = ensure_secret(clients["secretsmanager"], names["secret"],
+                               json.dumps(secrets, sort_keys=True))
     environment = {"PDT_ENV_SECRET_RESOURCE": secret_arn}
     grants = []
     if store:
-        ensure_store(clients["s3"], bucket, region)
+        ensure_store(clients["s3"], bucket, account, region)
         environment["PDT_STORAGE_URL"] = store_url(bucket, app["name"])
-        grants = store_statements(bucket, app["name"])
+        grants = store_statements(bucket, app["name"], account)
     execution, job_role, scheduler_role = ensure_roles(
         clients["iam"], names, account, region, secret_arn, grants)
     image = f"{repository_uri}:{names['image_tag']}"
@@ -1081,7 +1120,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
         # With the repository already gone, an earlier destroy stopped before the build resources.
         if repository_unused or not resource_exists(
                 clients["ecr"], "describe_repositories", repositoryNames=[REPOSITORY]):
-            plan += build_cleanup(clients, build_bucket(account, region))
+            plan += build_cleanup(clients, account, build_bucket(account, region))
         if repository_unused:
             plan.append((console.Markup(f"delete ECR repository {console.value(REPOSITORY)} "
                                         "(no other apps use it)"),
@@ -1091,7 +1130,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
                              force=True))))
         bucket = store_name(account)
         store = deployer_store(app, session, account) if app["storage"] else None
-        store_present = store_exists(clients["s3"], bucket) if store else False
+        store_present = store_exists(clients["s3"], bucket, account) if store else False
         if store_present:
             warn_if_locked(store, app["name"])
     wait_for_permissions()
@@ -1293,6 +1332,97 @@ def start(app: dict, session, follow: bool = False) -> int:
     if not follow:
         return 0
     return logs(app, session, ["--follow"], new=lambda run: run.id == response["jobId"])
+
+
+MR_WAIT_SECONDS = 10
+
+
+def mr_run(app: dict, session, iid: str) -> int:
+    stop_on_sigterm()
+    clients = batch_clients(session)
+    names = resource_names(app["name"])
+    revisions = [item for item in active_job_definitions(clients["batch"], names["job_definition"])
+                 if managed(item)]
+    if not revisions:
+        fail(f"{console.value(app['name'])} has no deployed Batch job definition "
+             f"{console.value(names['job_definition'])}; deploy it first.")
+    production = revisions[0]
+    account, region = aws_settings(app, session)
+    cloud = build_in_cloud(app, "CodeBuild", DOCKER_PLATFORM)
+    repository_uri = ensure_repository(clients["ecr"])
+    tag = f"{app['name']}-mr{iid}"
+    image = f"{repository_uri}:{tag}"
+    name = f"{names['job_definition']}-mr{iid}"
+    uploads = build_bucket(account, region)
+
+    def build(stage: Path) -> None:
+        if cloud:
+            ensure_build_resources(clients, account, region, uploads,
+                                   build_project(clients["codebuild"]))
+            codebuild_build(stage, image, clients, uploads, app["name"])
+        else:
+            docker_build(stage, image, clients["ecr"])
+
+    arn = job_id = None
+    try:
+        ensure_image(app, image, DOCKER_PLATFORM, "CodeBuild" if cloud else "", None,
+                     lambda: False, build)
+        container = dict(production["containerProperties"])
+        environment = [item for item in container.get("environment") or []
+                       if item["name"] not in (lifecycle.TRIGGER_ENV, lifecycle.MR_IID_ENV,
+                                               *MR_ENV_NAMES)]
+        environment += [{"name": lifecycle.TRIGGER_ENV, "value": lifecycle.MR_TRIGGER},
+                        {"name": lifecycle.MR_IID_ENV, "value": iid}]
+        environment += [{"name": key, "value": os.environ[key]} for key in MR_ENV_NAMES
+                        if os.environ.get(key)]
+        arn = clients["batch"].register_job_definition(
+            jobDefinitionName=name, type="container", platformCapabilities=["FARGATE"],
+            containerProperties={**container, "image": image, "environment": environment},
+            tags=dict(MANAGED_TAGS))["jobDefinitionArn"]
+        job_id = clients["batch"].submit_job(jobName=name, jobQueue=JOB_QUEUE.name,
+                                             jobDefinition=arn, tags=dict(MANAGED_TAGS))["jobId"]
+        console.done(f"Started Batch job {console.value(job_id)} of {console.value(name)}.")
+        code = follow_job(clients["batch"], session.client("logs", config=RETRIES),
+                          names["log_group"], job_id)
+        job_id = None
+        return code
+    finally:
+        ignore_sigterm()
+        if job_id is not None:
+            clients["batch"].terminate_job(jobId=job_id, reason="pdt mr-run stopped")
+        if arn is not None:
+            clients["batch"].deregister_job_definition(jobDefinition=arn)
+        clients["ecr"].batch_delete_image(repositoryName=REPOSITORY,
+                                          imageIds=[{"imageTag": tag}])
+        console.done(f"Deleted job definition {console.value(name)} and image tag "
+                     f"{console.value(tag)}.")
+
+
+def follow_job(batch, logs_client, log_group: str, job_id: str) -> int:
+    printed = 0
+    while True:
+        job = batch.describe_jobs(jobs=[job_id])["jobs"][0]
+        run = job_run(job)
+        lines = read_lines(batch, logs_client, log_group, run)
+        for line in lines[printed:]:
+            runs_cli.print_line(line)
+        printed = max(printed, len(lines))
+        if run.status != "running":
+            code = (job.get("container") or {}).get("exitCode")
+            return code if isinstance(code, int) else 1
+        time.sleep(MR_WAIT_SECONDS)
+
+
+def kill(app: dict, session) -> int:
+    batch = session.client("batch", config=RETRIES)
+    job = resource_names(app["name"])["job_definition"]
+    running = [run for run in list_runs(batch, job) if run.status == "running"]
+    for run in running:
+        batch.terminate_job(jobId=run.id, reason="pdt run --kill")
+        console.done(f"Stopped Batch job {console.value(run.id)} of {console.value(app['name'])}.")
+    if not running:
+        console.say(f"No job of {console.value(app['name'])} runs.")
+    return 0
 
 
 def logs(app: dict, session, rest: list[str],

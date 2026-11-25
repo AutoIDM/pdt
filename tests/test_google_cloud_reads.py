@@ -258,7 +258,8 @@ def test_the_secret_value_from_gcloud_is_url_safe_base64(monkeypatch):
     payload = json.dumps({"TOKEN": "é>?~"})
     data = base64.urlsafe_b64encode(payload.encode()).decode()
     assert "-" in data or "_" in data
-    monkeypatch.setattr(gc, "describe_json", lambda *args: {"payload": {"data": data}})
+    answer = json.dumps({"payload": {"data": data}})
+    monkeypatch.setattr(gc, "gcloud", lambda *args: subprocess.CompletedProcess(args, 0, answer, ""))
     assert gc.secret_value("p", "pdt-report-env") == payload
 
 

@@ -200,6 +200,29 @@ def test_destroy_in_a_shared_group_finds_its_secret_when_the_latest_version_is_d
     assert f"delete and purge Key Vault secret {SID}" in plans[0]
 
 
+def test_destroy_of_the_last_app_in_a_group_the_grant_made_plans_each_delete(monkeypatch):
+    tagged = {"managed-by": "pdt"}
+    monkeypatch.setitem(FOUND, "/resourceGroups/pdt",
+                        {"tags": {**tagged, "pdt-lifecycle": "retain"}})
+    monkeypatch.setitem(FOUND, "/resourceGroups/pdt/resources", {"value": [
+        {"name": "pdtregistry", "type": "Microsoft.ContainerRegistry/registries", "tags": tagged},
+        {"name": "pdt-vault", "type": "Microsoft.KeyVault/vaults", "tags": tagged},
+        {"name": deploy_azure.GRANT_NAME, "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+         "tags": tagged},
+        {"name": JOB, "type": "Microsoft.App/jobs", "tags": MANAGED["tags"]}]})
+    monkeypatch.setattr(azure, "environment_release",
+                        lambda settings: azure.Release(environment=True))
+    monkeypatch.setitem(FOUND, "/deletedVaults/pdt-vault", {})
+    opener(monkeypatch, {"/deletedVaults/pdt-vault": 404})
+    plan = destroy(monkeypatch, confirmed=False)[0]
+    assert f"delete {JOB} (Microsoft.App/jobs)" in plan
+    assert "delete pdtregistry (Microsoft.ContainerRegistry/registries)" in plan
+    assert "delete and purge pdt-vault (Microsoft.KeyVault/vaults)" in plan
+    assert not any(deploy_azure.GRANT_NAME in line or "resource group pdt " in line
+                   for line in plan)
+    assert any(line.startswith("delete Container Apps environment") for line in plan)
+
+
 def test_destroy_reads_with_a_new_token_when_another_app_takes_the_group_after_the_question(
         monkeypatch):
     monkeypatch.setitem(FOUND, "/resourceGroups/pdt/resources", {"value": [MANAGED]})

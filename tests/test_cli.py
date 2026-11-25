@@ -202,6 +202,20 @@ def test_a_run_number_at_the_project_root_is_not_an_app(project, monkeypatch, ca
     assert "no app named '3'" in capsys.readouterr().out
 
 
+def test_the_service_command_is_the_approved_set_and_sync_is_hidden():
+    parser = cli.build_parser()
+    sub = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+    assert "grant" not in sub.choices and "sync" not in sub.choices and "register" in sub.choices
+    assert "sync" not in parser.format_help()
+
+    def actions(command):
+        return set(next(a for a in sub.choices[command]._actions
+                        if isinstance(a, argparse._SubParsersAction)).choices)
+
+    assert actions("service") == {"install", "start", "status", "remove"}
+    assert parser.parse_args(["run", "hello-world", "--kill"]).kill
+
+
 def test_storage_dispatches_with_the_extra_args(project, monkeypatch):
     add_app(project, "hello-world", "schedule: daily\n")
     calls = []
@@ -235,9 +249,10 @@ def test_run_starts_a_powershell_app_through_the_wrapper(project, monkeypatch):
                        str(Path(cli.__file__).with_name("run_powershell.py")), str(folder)]
     assert kwargs["cwd"] == folder
     assert kwargs["env"]["PDT_PROJECT"] == str(project)
+    output = folder / ".pdt" / "runs" / lifecycle.storage.RUN_ID / "output"
     assert os.environ["PSModulePath"] == "MODULE-PATH"
     assert kwargs["env"] == dict(os.environ, PDT_PROJECT=str(project),
-                                 PDT_RUN_ID=lifecycle.storage.RUN_ID)
+                                 PDT_RUN_ID=lifecycle.storage.RUN_ID, PDT_OUTPUT_DIR=str(output))
 
 
 def test_run_stops_when_a_powershell_module_does_not_install(project, monkeypatch, capsys):
@@ -267,8 +282,10 @@ def test_run_starts_the_run_py_that_replaces_the_wrapper(project, monkeypatch):
     monkeypatch.setattr(lifecycle.subprocess, "Popen", started(lambda command, **kwargs: calls.append(
         (command, kwargs)) or subprocess.CompletedProcess(command, 0)))
     assert run_cli(monkeypatch, "run", "ps-report") == 0
-    assert calls == [(["uv", "run", "--script", "run.py"],
-                      {"cwd": folder, "env": dict(os.environ, PDT_RUN_ID=lifecycle.storage.RUN_ID)})]
+    output = folder / ".pdt" / "runs" / lifecycle.storage.RUN_ID / "output"
+    assert calls == [(["uv", "run", "--isolated", "--script", "run.py"],
+                      {"cwd": folder, "env": dict(os.environ, PDT_RUN_ID=lifecycle.storage.RUN_ID,
+                                                  PDT_OUTPUT_DIR=str(output))})]
     assert os.environ["PSModulePath"] == "MODULE-PATH"
 
 

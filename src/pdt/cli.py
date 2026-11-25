@@ -3,7 +3,7 @@
 Inside an app folder, leave <app> off any command that takes one and pdt uses that app.
 Anywhere else, leave it off or mistype it and pdt lists the apps it found.
 
-Every command except init, examples, upgrade, completion, aws, az, and gcloud needs a project.
+Every command except init, examples, upgrade, completion, register, service, aws, az, and gcloud needs a project.
 pdt finds it by walking up from the working directory to the nearest pdt.yml that is not in an app folder (an app folder holds its own pdt.yml).
 """
 
@@ -27,7 +27,7 @@ from pdt.config import ConfigError
 
 if not completion.COMPLETING:
     from pdt import (alerts_cli, console, deploy, gui_cli, lifecycle, powershell, pwsh,
-                     scaffold, upgrade)
+                     register_cli, run_windows_task, scaffold, service, upgrade)
     from pdt.utils.email_auth import can_prompt
     from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
 
@@ -89,16 +89,19 @@ APP_HELP = ("the app's folder name; leave it off inside an app folder to use tha
             "or anywhere else to see the choices")
 
 
-def choose_app(name: str | None, command: str, quiet: bool = False) -> str | None:
+def choose_app(name: str | None, command: str, quiet: bool = False,
+               deployed_too: bool = False) -> str | None:
     """Return the app `pdt <command>` should act on, or None after guiding the user.
 
     Every command that takes an app name goes through here. Inside an app folder
     a missing name means that app. Elsewhere, leaving the name off or mistyping
     it gives the same answer everywhere: the apps this project has, and the
     exact command to run next. `quiet` keeps --json output free of the line
-    that names the app pdt picked.
+    that names the app pdt picked. `deployed_too` also offers a disabled app that is
+    deployed, as `destroy` does, so `pdt run APP --kill` can stop its job.
     """
-    apps = config.destroyable_apps() if command == "destroy" else config.find_apps()
+    apps = (config.destroyable_apps() if command == "destroy" or deployed_too
+            else config.find_apps())
     if not apps:
         say_no_apps()
         return None
@@ -229,9 +232,11 @@ def powershell_problems(name: str, app: dict, quiet: bool = False) -> list[str]:
 
 
 def cmd_run(args) -> int:
-    name = choose_app(args.app, "run")
+    name = choose_app(args.app, "run", deployed_too=args.kill)
     if name is None:
         return 1
+    if args.kill:
+        return deploy.kill(name)
     if args.deployed:
         return deploy.start(name, args.follow)
     app = config.merged_app(name)
@@ -273,14 +278,17 @@ def cmd_run(args) -> int:
                                   web_app.ENV_STORAGE_READ_DIR: str(run_container.read_root())})
         return run_container.serve(name, run_container.start(["uv", "run", "--script", "run.py"],
                                                              cwd=app["dir"], env=env))
-    if (app["dir"] / "run.py").is_file():
-        code = lifecycle.run_job(name, provider, ["uv", "run", "--script", "run.py"], app["dir"])
-    else:
-        wrapper = Path(__file__).with_name("run_powershell.py")
-        code = lifecycle.run_job(
-            name, provider,
-            ["uv", "run", "--project", str(Path.cwd()), "--script", str(wrapper), str(app["dir"])],
-            app["dir"], dict(os.environ, PDT_PROJECT=str(config.find_project())))
+    with config.run_lock(name):
+        if (app["dir"] / "run.py").is_file():
+            code = lifecycle.run_job(name, provider,
+                                     run_windows_task.script_command("uv", app["dir"]), app["dir"])
+        else:
+            wrapper = Path(__file__).with_name("run_powershell.py")
+            code = lifecycle.run_job(
+                name, provider,
+                ["uv", "run", "--project", str(Path.cwd()), "--script", str(wrapper),
+                 str(app["dir"])],
+                app["dir"], dict(os.environ, PDT_PROJECT=str(config.find_project())))
     if (code == 0 and name == scaffold.STARTER
             and not config.is_deployed(name)):
         console.say()
@@ -553,6 +561,20 @@ def cmd_alerts(args) -> int:
     return alerts_cli.setup() if args.action == "setup" else alerts_cli.test()
 
 
+def cmd_register(args) -> int:
+    return register_cli.register(args.code, args.api_url, args.yes)
+
+
+def cmd_service(args) -> int:
+    actions = {
+        "install": lambda: service.install(args.projects, args.proxy, args.yes),
+        "status": lambda: service.status(args.json),
+        "start": service.start,
+        "remove": lambda: service.remove(args.yes),
+    }
+    return actions[args.action]()
+
+
 def cmd_gui(args) -> int:
     return gui_cli.main(args.port, args.background, args.no_browser, args.stop)
 
@@ -625,11 +647,12 @@ class HelpFormatter(rich_argparse.RawDescriptionRichHelpFormatter):
 
 
 COMMAND_GROUPS = {
-    "Get started": ["init", "examples", "new", "upgrade", "completion"],
+    "Get started": ["init", "examples", "new", "register", "upgrade", "completion"],
     "Run and validate": ["list", "validate", "run"],
     "Deploy": ["deploy", "destroy", "login", "pause", "unpause"],
     "Check a deployed app": ["health", "runs", "logs", "alerts", "gui"],
     "Manage app data": ["secrets", "storage"],
+    "Work with the AutoIDM portal": ["service"],
     "Cloud CLIs": ["aws", "az", "gcloud"],
 }
 
@@ -686,6 +709,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--follow", action="store_true",
                    help="print the run's log until it ends and exit with the run's result; "
                         "a run on this machine always does")
+    p.add_argument("--kill", action="store_true",
+                   help="stop each run of the deployed job that runs now, with its child processes")
     p.set_defaults(func=cmd_run)
     p = add_parser("deploy", help="deploy an app")
     app = p.add_argument("app", nargs="?", help=APP_HELP)
@@ -744,8 +769,10 @@ def build_parser() -> argparse.ArgumentParser:
     app = p.add_argument("app", nargs="?", help=APP_HELP)
     app.completer = completion.apps
     rest = p.add_argument("rest", nargs=argparse.REMAINDER,
-                          help="ls [PATH] [--recursive] [--json], get PATH [DEST], query SQL, "
-                               "unlock [--yes], destroy [--yes], or --open (after get: open the file)")
+                          help="ls [PATH] [--recursive] [--json], get PATH [DEST] (a file or a "
+                               "folder), get --run N [DEST] (the output folder of run N of pdt "
+                               "runs), query SQL, unlock [--yes], destroy [--yes], or --open "
+                               "(after get: open what get saved)")
     rest.completer = completion.storage_args
     p.set_defaults(func=cmd_storage)
     p = add_parser("runs", help="list a deployed app's recent runs")
@@ -801,6 +828,40 @@ def build_parser() -> argparse.ArgumentParser:
         "test", help="send a test message to every alert that is set up",
         formatter_class=HelpFormatter)
     p.set_defaults(func=cmd_alerts)
+    p = add_parser("register",
+                   help="authenticate this computer for AutoIDM managed services")
+    p.add_argument("--code",
+                   help="the one-time enrollment code from AutoIDM, such as KQ7M-2RTX; leave it "
+                        "off to sign in through a browser")
+    p.add_argument("--api-url",
+                   help=f"the AutoIDM address (default: PDT_API_URL, else {config.AUTOIDM_API_URL})")
+    p.add_argument("-y", "--yes", action="store_true",
+                   help="accept the access statement of the service install, and do not wait "
+                        "for the Connect pages")
+    p.set_defaults(func=cmd_register)
+    p = add_parser("service", help="run commands from the AutoIDM portal on this computer")
+    actions = p.add_subparsers(dest="action", metavar="<action>", required=True, prog="pdt service")
+
+    def add_action(group, name: str, **kwargs):
+        return group.add_parser(
+            name, formatter_class=rich_argparse.RawDescriptionRichHelpFormatter, **kwargs)
+
+    q = add_action(actions, "install", help="start the service now and at each boot")
+    projects = q.add_argument("--projects", metavar="DIR",
+                              help="one project to serve, or the folder that holds the projects "
+                                   "to serve (default: the current project, and the folder "
+                                   "service/projects in pdt's data folder)")
+    projects.completer = completion.directories
+    q.add_argument("--proxy", metavar="URL",
+                   help="the proxy for the service and its jobs (default: the proxy of this "
+                        "computer's settings)")
+    q.add_argument("-y", "--yes", action="store_true", help="accept the access statement")
+    q = add_action(actions, "status", help="show the service, its last checks, and running commands")
+    q.add_argument("--json", action="store_true", help="print JSON for a script or an agent")
+    add_action(actions, "start", help="start the installed service through its service manager")
+    q = add_action(actions, "remove", help="stop the service and remove it from this computer")
+    q.add_argument("-y", "--yes", action="store_true", help="skip the confirmation prompt")
+    p.set_defaults(func=cmd_service)
     p = add_parser("gui", help="open the project's dashboard in your web browser")
     p.add_argument("--port", type=int, default=config.GUI_PORT,
                    help=f"the local port to serve on (default: {config.GUI_PORT})")
@@ -859,6 +920,8 @@ def run() -> int:
         return args.func(args)
     except ConfigError as e:
         console.error(console.escape(str(e)))
+        if isinstance(e, config.LockHeld) and os.environ.get(config.SERVICE_CHILD_ENV):
+            return config.LOCKED_EXIT
         return 1
     except KeyboardInterrupt:
         console.say()

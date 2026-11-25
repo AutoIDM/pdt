@@ -47,6 +47,8 @@ def test_the_plan_asks_nothing_saves_nothing_and_starts_the_provider_with_plan(
     monkeypatch.setattr(regions, "can_prompt", lambda _interactive: False, raising=False)
     monkeypatch.setattr(regions, "region_suggestion",
                         lambda provider, platform: ("us-east-1", "a test says so"))
+    monkeypatch.delenv(deploy.TIMEZONE_ENV, raising=False)
+    monkeypatch.setattr(regions, "local_timezone", lambda: "Europe/Berlin")
     monkeypatch.setattr(deploy, "dispatch", lambda *args: seen.append(
         (args, config.unsaved())) or 0)
     monkeypatch.setattr(deploy.alerts_cli, "offer", lambda *args: pytest.fail("offered alerts"))
@@ -56,7 +58,8 @@ def test_the_plan_asks_nothing_saves_nothing_and_starts_the_provider_with_plan(
     assert deploy.deploy("report", plan_only=True) == 0
 
     assert seen == [(("aws", "deploy", "report", True, ["--plan"]),
-                     {"schedule": "daily", "platform": {"region": "us-east-1"}})]
+                     {"schedule": "daily", "platform": {"region": "us-east-1"},
+                      "timezone": "Europe/Berlin"})]
     assert sorted(str(path) for path in Path(aws_project).rglob("*")) == before
     assert (aws_project / "pdt.yml").read_text() == "platform:\n  provider: aws\n"
     assert not config.is_deployed("report")
@@ -64,7 +67,7 @@ def test_the_plan_asks_nothing_saves_nothing_and_starts_the_provider_with_plan(
     out = capsys.readouterr().out
     assert "nothing was deployed" in out and "pdt deploy report --yes" in out
     assert "because" not in out and "has no schedule" not in out
-    assert out.count("this plan changes no file") == 2
+    assert out.count("this plan changes no file") == 3
 
 
 def test_the_plan_values_reach_the_provider_script(aws_project, monkeypatch):
