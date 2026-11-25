@@ -107,6 +107,7 @@ def fake_cloud(monkeypatch, fake: FakeCloud, secrets=None):
     monkeypatch.setattr(gc, "build_image", lambda stage, image, region:
                         fake.calls.append(("docker", "build", image)) or fake.pushed.add(image))
     monkeypatch.setattr(gc, "list_json", lambda *args: [])
+    monkeypatch.setattr(gc, "all_regions_run_list", lambda kind, project, region: ([], False))
     monkeypatch.setattr(gweb, "build_in_cloud", lambda app, builder, platform: False)
     monkeypatch.setattr(gweb, "ensure_image", built_image)
     monkeypatch.setattr(gweb, "gather_secrets", lambda app: {"TOKEN": "secret"}
@@ -425,6 +426,31 @@ def test_destroy_with_nothing_deployed_removes_nothing(google, monkeypatch, caps
     assert gweb.destroy(web_app(google), True) == 0
     assert fake.ran("run", "services", "delete") == []
     assert "Nothing to remove for dashboard" in " ".join(capsys.readouterr().out.split())
+
+
+def test_destroy_keeps_the_builder_for_a_job_only_the_regional_list_shows(google, monkeypatch):
+    fake = fake_cloud(monkeypatch, FakeCloud(found={
+        ("storage", "buckets", "describe"): {"labels": {"managed-by": "pdt"}}}))
+    job = {"metadata": {"name": "pdt-report", "labels": {"managed-by": "pdt"}}}
+    monkeypatch.setattr(gc, "list_json", lambda *args: (
+        [job] if args[:4] == ("run", "jobs", "list", "--region") else []))
+    monkeypatch.setattr(gc, "service_account_or_none", lambda project, email:
+                        {"email": email, "displayName": gc.BUILDER_DISPLAY_NAME})
+    assert gweb.destroy(web_app(google), True) == 0
+    assert fake.ran("iam", "service-accounts", "delete") == []
+    assert fake.ran("storage", "rm") == []
+
+
+def test_destroy_keeps_the_builder_when_another_region_is_unreachable(google, monkeypatch):
+    fake = fake_cloud(monkeypatch, FakeCloud(found={
+        ("storage", "buckets", "describe"): {"labels": {"managed-by": "pdt"}}}))
+    monkeypatch.setattr(gc, "all_regions_run_list",
+                        lambda kind, project, region: ([], kind == "jobs"))
+    monkeypatch.setattr(gc, "service_account_or_none", lambda project, email:
+                        {"email": email, "displayName": gc.BUILDER_DISPLAY_NAME})
+    assert gweb.destroy(web_app(google), True) == 0
+    assert fake.ran("iam", "service-accounts", "delete") == []
+    assert fake.ran("storage", "rm") == []
 
 
 PRICES = {gweb.CPU_SKU: 0.000024, gweb.MEMORY_SKU: 0.0000025, gweb.MIN_CPU_SKU: 0.0000025,

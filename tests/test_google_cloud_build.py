@@ -60,8 +60,9 @@ class FakeGcloud:
     """gcloud as deploy and destroy see it: `found` maps a command prefix to its json."""
 
     def __init__(self, found=None, enabled=(*google.APIS, google.CLOUD_BUILD_API),
-                 submit_code=0, submit_stderr="", digest="sha256:new"):
+                 submit_code=0, submit_stderr="", digest="sha256:new", stderr=None):
         self.found = found or {}
+        self.stderr = stderr or {}
         self.digest = digest
         self.enabled = enabled
         self.submit_code = submit_code
@@ -78,7 +79,8 @@ class FakeGcloud:
         self.calls.append(args)
         for prefix, answer in self.found.items():
             if args[:len(prefix)] == list(prefix):
-                return subprocess.CompletedProcess(command, 0, json.dumps(answer), "")
+                return subprocess.CompletedProcess(command, 0, json.dumps(answer),
+                                                   self.stderr.get(prefix, ""))
         if args[:3] == ["services", "list", "--enabled"]:
             return subprocess.CompletedProcess(command, 0, "\n".join(self.enabled), "")
         if args[:2] == ["builds", "submit"]:
@@ -355,6 +357,66 @@ def test_destroy_keeps_the_builder_while_another_app_runs(project, monkeypatch, 
     assert fake.ran("storage", "rm") == []
     out = capsys.readouterr().out
     assert BUILDER in out and BUILDS in out
+
+
+RUNNER = "pdt-runner@my-project.iam.gserviceaccount.com"
+
+
+@pytest.mark.parametrize("kind", ["jobs", "services"])
+def test_destroy_keeps_shared_resources_for_an_app_only_the_regional_list_shows(
+        project, monkeypatch, kind):
+    other = {"metadata": {"name": "pdt-other", "labels": {
+        "managed-by": "pdt", "cloud.googleapis.com/location": "us-central1"}}}
+    fake = destroy_fake()
+    fake.found = {("run", kind, "list", "--region"): [other],
+                  **fake.found,
+                  ("iam", "service-accounts", "list"): [
+                      {"email": BUILDER, "displayName": google.BUILDER_DISPLAY_NAME},
+                      {"email": RUNNER, "displayName": "pdt job runner"}]}
+    google.destroy(destroy_app(project, monkeypatch, fake), True)
+    assert fake.ran("iam", "service-accounts", "delete", BUILDER) == []
+    assert fake.ran("storage", "rm") == []
+    if kind == "jobs":
+        assert fake.ran("iam", "service-accounts", "delete", RUNNER) == []
+        assert fake.ran("artifacts", "repositories", "delete") == []
+
+
+@pytest.mark.parametrize("kind", ["jobs", "services"])
+def test_destroy_keeps_shared_resources_when_another_region_is_unreachable(
+        project, monkeypatch, kind):
+    fake = destroy_fake()
+    fake.found = {("run", kind, "list", "--region"): [],
+                  ("run", kind, "list", "--project"): [],
+                  **fake.found,
+                  ("iam", "service-accounts", "list"): [
+                      {"email": BUILDER, "displayName": google.BUILDER_DISPLAY_NAME},
+                      {"email": RUNNER, "displayName": "pdt job runner"}]}
+    fake.stderr = {("run", kind, "list", "--project"): (
+        "WARNING: The following Cloud Run regions did not respond: europe-west1. "
+        "List results may be incomplete.\n")}
+    google.destroy(destroy_app(project, monkeypatch, fake), True)
+    assert fake.ran("iam", "service-accounts", "delete", BUILDER) == []
+    assert fake.ran("storage", "rm") == []
+    if kind == "jobs":
+        assert fake.ran("iam", "service-accounts", "delete", RUNNER) == []
+
+
+def test_destroy_still_removes_shared_resources_when_only_own_region_warned_in_global_list(
+        project, monkeypatch):
+    fake = destroy_fake()
+    fake.found = {("run", "jobs", "list", "--region"): [],
+                  ("run", "jobs", "list", "--project"): [],
+                  **fake.found,
+                  ("iam", "service-accounts", "list"): [
+                      {"email": BUILDER, "displayName": google.BUILDER_DISPLAY_NAME},
+                      {"email": RUNNER, "displayName": "pdt job runner"}]}
+    fake.stderr = {("run", "jobs", "list", "--project"): (
+        "WARNING: The following Cloud Run regions did not respond: us-central1. "
+        "List results may be incomplete.\n")}
+    google.destroy(destroy_app(project, monkeypatch, fake), True)
+    assert len(fake.ran("iam", "service-accounts", "delete", RUNNER)) == 1
+    assert len(fake.ran("iam", "service-accounts", "delete", BUILDER)) == 1
+    assert len(fake.ran("storage", "rm")) == 1
 
 
 def test_destroy_without_a_cloud_build_ever_tolerates_their_absence(project, monkeypatch):
