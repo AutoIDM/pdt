@@ -1,40 +1,44 @@
 # pdt - process deploy tool
 
-**Turn any script into a scheduled job in your cloud.**
+**Turn any script into a scheduled job or web app in your cloud.**
 
-pdt builds, runs, and deploys scheduled jobs to AWS, Azure, Google Cloud, or Windows Task Scheduler. It gives every job the same [primitives](#primitives), chosen from years of deploying scheduled jobs for businesses on each cloud. No servers to run and nothing extra to install, and everything it makes lives in your own account.
+pdt builds, runs, and deploys apps—scheduled jobs and web apps—to AWS, Azure, Google Cloud, or Windows Task Scheduler. It gives every app the same [primitives](#primitives), chosen from years of deploying apps for businesses on each cloud. No servers to run and nothing extra to install, and everything it makes lives in your own account.
 
 ![What pdt does: your project folder goes through pdt deploy to a schedule on AWS, GCP, Azure, or Task Scheduler, and pdt runs, logs, health, and gui read the results back.](docs/what-is-pdt.svg)
 
 ## Key Features
 
-1. **Bring your scripts** - Drop in your PowerShell or Python files. pdt finds what they need and runs them.
+1. **Bring your scripts** - Drop in your PowerShell or Python files, or a web app with its own `Dockerfile`. pdt finds what they need and runs them.
 2. **One command to deploy** - No cloud skills needed. `pdt deploy` installs the tools it needs and opens the sign-in page for you.
-3. **Any cloud** - Move a job between AWS, Azure, Google Cloud, and Windows by changing one line.
+3. **Any cloud** - Move a job between AWS, Azure, Google Cloud, and Windows by changing one line, or deploy a web app behind Google sign-in on Google Cloud.
 4. **Know the cost first** - See the plan and a monthly cost estimate before anything changes.
-5. **Know when it breaks** - Health checks, logs, a dashboard, and alerts to Slack, Teams, or email.
+5. **Know when it breaks** - Health checks, logs, a local dashboard, and alerts to Slack, Teams, or email.
 
 ## Primitives
 
-Every job gets the same building blocks. pdt picks the service on each cloud for you.
+Every app gets the same building blocks for its [app profile](docs/types-of-apps.md). pdt picks the service on each cloud for you.
+
+### Scheduled jobs (`app_profile: job`, default)
 
 | | AWS | Azure | Google Cloud | Windows |
 | --- | --- | --- | --- | --- |
 | **Compute** | AWS Batch (Fargate) | Container Apps Jobs | Cloud Run Jobs | Task Scheduler |
 | **Schedule** | EventBridge Scheduler | Container Apps Jobs | Cloud Scheduler | Task Scheduler |
 | **Secrets** | Secrets Manager | Key Vault | Secret Manager | `.env` file, read at each run |
-| **Storage** (job files and state) | S3 | Blob Storage | Cloud Storage | `%ProgramData%\pdt` |
+| **Storage** (app files and state) | S3 | Blob Storage | Cloud Storage | `%ProgramData%\pdt` |
 | **Logs** | CloudWatch Logs | Log Analytics | Cloud Logging | Log files |
 | **Alerts** | Slack, Teams, email | Slack, Teams, email | Slack, Teams, email | Slack, Teams, email |
 
+Web apps (`app_profile: web`) run on Google Cloud Run behind Identity-Aware Proxy; see [Types of apps](docs/types-of-apps.md).
+
 ### Practices
 
-1. **One folder per job** - Each job is built, deployed, and destroyed on its own.
-2. **Run it locally first** - `pdt run` runs the job the same way the cloud does, with the same config and storage.
-3. **You own everything** - Your jobs live in your own git repo, and they run in your own cloud account. There is no pdt server.
+1. **One folder per app** - Each app is built, deployed, and destroyed on its own.
+2. **Run it locally first** - `pdt run` runs the app the same way the cloud does, with the same config and storage.
+3. **You own everything** - Your apps live in your own git repo, and they run in your own cloud account. There is no pdt server.
 4. **Secrets stay secret** - Kept in `.env` on your computer and in the cloud's secret store, never in git or the image.
 5. **Nothing left behind** - Everything pdt makes is tagged `managed-by=pdt`, and `pdt destroy` removes all of it.
-6. **Cheapest by default** - Jobs run only when scheduled, on the lowest-cost option that works (for example arm64 on AWS).
+6. **Cheapest by default** - Jobs run only when scheduled, and web apps scale to zero by default, on the lowest-cost option that works (for example arm64 on AWS).
 7. **One run at a time** - A job's saved state is locked during a run, so two runs never overwrite each other.
 
 ## Quick Start
@@ -56,7 +60,7 @@ uv tool update-shell
 
 For other ways to install, and how to update or remove pdt, see [docs/install.md](docs/install.md).
 
-### Deploy your first job
+### Deploy your first app
 
 Then run:
 
@@ -72,9 +76,9 @@ pdt logs
 
 ### Deploy your own script
 
-1. Create the job with `pdt new your-powershell-job --from powershell-hello-world`
+1. Create the app with `pdt new your-powershell-job --from powershell-hello-world`
 2. Replace `hello.ps1` in the `your-powershell-job` folder with your own `.ps1` script
-3. Test the job locally with `pdt run your-powershell-job`
+3. Test the app locally with `pdt run your-powershell-job`
 4. Deploy it with `pdt deploy your-powershell-job`
 
 See [every command](docs/commands.md).
@@ -87,36 +91,42 @@ A first deploy of the `hello-world-example` app to Azure, then a look at its run
 
 See [the same output as text](docs/example-deploy.md).
 
-
 ## The bundled examples
 
 Run `pdt examples` to list them, then `pdt new <name> --from <example>` to copy one.
 
 ### hello-world
+
 Small job that logs "Hello world." `pdt init` puts a copy of this in every new empty project.
 
 ### azure-license-waste
-PowerShell job. Finds the Microsoft 365 licenses a tenant pays for that nobody uses: paid licenses on disabled accounts, on accounts that have not signed in for 90 days (or never did), and seats bought but assigned to nobody. Each run keeps a `LicenseWaste-<date>.xlsx` workbook in the job's data store, with a Summary sheet of monthly and annual cost and one sheet per finding.
+
+PowerShell job. Finds the Microsoft 365 licenses a tenant pays for that nobody uses: paid licenses on disabled accounts, on accounts that have not signed in for 90 days (or never did), and seats bought but assigned to nobody. Each run keeps a `LicenseWaste-<date>.xlsx` workbook in the app's data store, with a Summary sheet of monthly and annual cost and one sheet per finding.
 
 ### impossible-travel-report
+
 Looks at recent Entra ID sign-ins. Sends an email when one person signs in from two far-apart places too quickly: Dallas an hour ago, Paris now.
 
-Settings for the lookback window, the minimum distance, and the email addresses live in the job's own `pdt.yml`. The env vars it needs are listed there too, and in its `env.template`.
+Settings for the lookback window, the minimum distance, and the email addresses live in the app's own `pdt.yml`. The env vars it needs are listed there too, and in its `env.template`.
 
 ### intune-export
 
-PowerShell job. Once a week it exports the Intune configuration of a tenant with the bulk export of [IntuneManagement](https://github.com/Micke-K/IntuneManagement) version 4, and keeps an `IntuneExport-<date>.zip` in the job's data store. To import, unzip it and point IntuneManagement's import at the company folder inside. 
+PowerShell job. Once a week it exports the Intune configuration of a tenant with the bulk export of [IntuneManagement](https://github.com/Micke-K/IntuneManagement) version 4, and keeps an `IntuneExport-<date>.zip` in the app's data store. To import, unzip it and point IntuneManagement's import at the company folder inside.
 
 ### monday-orphaned-account-report
+
 Reports active Monday users whose email address does not match the `userPrincipalName` of an active Entra ID user.
 
 ### powershell-hello-world
-A PowerShell job whose one script, `hello.ps1`, writes "Hello, world!". It is the job the [Quick Start](#quick-start) deploys. Put your own `.ps1` files in its folder in place of `hello.ps1` to deploy your own PowerShell job.
+
+A PowerShell job whose one script, `hello.ps1`, writes "Hello, world!". It is the app the [Quick Start](#quick-start) deploys. Put your own `.ps1` files in its folder in place of `hello.ps1` to deploy your own PowerShell job.
 
 ### powershell-report
-PowerShell job. small CSV report with `Export-Csv`, and pdt keeps the file in the app's data store.
+
+PowerShell job. Writes a small CSV report with `Export-Csv`, and pdt keeps the file in the app's data store.
 
 ### web-hello
+
 A web app (`app_profile: web`) that greets the person who signed in.
 
 ## Support
@@ -128,15 +138,26 @@ A web app (`app_profile: web`) that greets the person who signed in.
 
 ## Documentation
 
-- [Projects and apps](docs/projects.md): set up a project, add an app, and where pdt keeps its files
-- [Deploying](docs/deploy.md): deploy, run, pause, and destroy a job, and run pdt from CI
-- [Commands](docs/commands.md): every `pdt` command and its options
-- [Settings](docs/settings.md): every setting in the project's and the apps' `pdt.yml` files, and every env var, with its allowed values and its default
-- [Choosing where jobs run](docs/platforms.md): AWS, Azure, Google Cloud, Windows Task Scheduler, and your own Dockerfile
-- [Keeping files between runs](docs/storage.md): the storage folder every app gets, and state that carries from one run to the next
-- [The dashboard](docs/dashboard.md): `pdt gui`, the browser view of every app's runs, logs, and files
-- [Writing your own app](docs/writing-apps.md): Python and PowerShell apps, and logging
+### Start here
+
+- [Concepts](docs/concepts.md): how projects, apps, profiles, secrets, and storage fit together
+- [Types of apps](docs/types-of-apps.md): scheduled jobs and web apps, and the services pdt picks for each profile on each cloud
+- [More ways to install](docs/install.md): other installs, release verification, and how to update or remove pdt
+- [Projects and apps](docs/projects.md): set up a project, add an app, move providers, and where pdt keeps its files
+- [Example deployment](docs/example-deploy.md): text transcript of a full `pdt deploy`, `pdt logs`, `pdt health`, and `pdt run --deployed`
+
+### Build and operate
+
+- [Writing your own app](docs/writing-apps.md): Python apps, PowerShell apps, web apps, logging, and built-in `pdt.utils` helpers
+- [Choosing where apps run](docs/platforms.md): AWS, Azure, Google Cloud, Windows Task Scheduler, cloud builds, and custom Dockerfiles
+- [Deploying and operating](docs/deploy.md): plan, deploy, run, pause, secrets, destroy, CI, and troubleshooting
+- [Keeping files between runs](docs/storage.md): app storage, locked state sync, querying files with DuckDB, and reading another app's files
+- [Alerts](docs/alerts.md): send deploy and run notifications to Slack or Microsoft Teams
 - [Sending email](docs/email.md): send mail from an app over SMTP, Microsoft Graph, SES, or Resend
-- [More ways to install](docs/install.md): other installs, and how to update or remove pdt
-- [Concepts](docs/concepts.md): projects, apps, and app profiles
-- [Types of apps](docs/types-of-apps.md): scheduled jobs and web apps, and the services pdt picks for each one on each cloud
+- [The dashboard](docs/dashboard.md): `pdt gui`, the local browser view of every app's runs, logs, files, and SQL workbench
+
+### Reference and AI agents
+
+- [Commands](docs/commands.md): every `pdt` command, its flags, exit codes, and `--json` output
+- [Settings](docs/settings.md): every key in the project and app `pdt.yml` files, every env var, precedence rules, and `.pdt/` files
+- [Using pdt with AI agents](docs/agents.md): safe non-interactive workflow, JSON schemas, guardrails, and project `AGENTS.md` (see also [llms.txt](llms.txt))

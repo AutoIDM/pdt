@@ -1,0 +1,27 @@
+# pdt - process deploy tool
+
+> Turn any Python, PowerShell, or container script into a scheduled job or web app in your own AWS, Azure, Google Cloud, or Windows Task Scheduler environment. No pdt server; everything lives in your own repo and cloud account.
+
+## Start here
+
+- [README](README.md): Overview, primitives, quick start, and bundled examples
+- [Concepts](docs/concepts.md): Projects, apps, profiles (`job` vs `web`), lifecycle, secrets, and storage
+- [Types of apps](docs/types-of-apps.md): Service mapping per app profile and cloud provider
+- [Projects and apps](docs/projects.md): Project layout, `pdt init`, `pdt new`, moving providers, local paths
+- [More ways to install](docs/install.md): MSI installer, `uv tool install pdt-cli`, PowerShell, provenance checks
+
+## Build and operate
+
+- [Writing your own app](docs/writing-apps.md): Python apps, PowerShell apps, web apps, and `pdt.utils` helpers
+- [Choosing where apps run](docs/platforms.md): AWS, Azure, Google Cloud, Windows Task Scheduler, cloud builds, custom Dockerfiles
+- [Deploying and operating](docs/deploy.md): `--plan`, deploy, run, secrets, pause/unpause, destroy, CI, troubleshooting
+- [Keeping files between runs](docs/storage.md): Persistent storage, locked state sync, `pdt storage query` (DuckDB), cross-app reads
+- [Alerts](docs/alerts.md): Slack and Microsoft Teams notifications (`pdt alerts setup`, `pdt alerts test`)
+- [Sending email](docs/email.md): SMTP, Microsoft Graph, SES, and Resend transports
+- [The dashboard](docs/dashboard.md): `pdt gui` local browser dashboard and CSV SQL workbench
+
+## Reference and AI agents
+
+- [Commands](docs/commands.md): Full CLI command reference, flags, `--json` behavior, and exit codes
+- [Settings](docs/settings.md): Complete `pdt.yml` schema, env vars, merge order, `.env`, and `.pdt/` files
+- [Using pdt with AI agents](docs/agents.md): Non-interactive workflow, JSON schemas, and guardrails for LLMs
