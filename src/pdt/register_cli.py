@@ -374,7 +374,7 @@ def install_here(customer: str, assume_yes: bool) -> int:
         console.say(console.escape(service.WINDOWS_ONLY))
         return 0
     next_command = [(service.install_next_step(),
-                     "run commands from the AutoIDM portal on this computer")]
+                     "manage your apps from the pdt portal on this computer")]
     if not service_access.is_admin():
         console.next_steps(next_command)
         return 0

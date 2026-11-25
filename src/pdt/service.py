@@ -54,8 +54,9 @@ CLOCK_WARNING_SECONDS = 60
 CLOCK_WARNING_EVERY_SECONDS = 3600
 FIRST_CHECKIN_SECONDS = 60
 KEY_SET_EVENT = 1003
-ACCESS_STATEMENT = ("A portal user of your organization and AutoIDM staff can run any program on "
-                    "this computer.")
+ACCESS_STATEMENT = ("This installs the Windows service pdt-service so authorized users in your "
+                    "organization and AutoIDM can deploy, run, and manage your pdt apps on this "
+                    "computer.")
 WINDOWS_ONLY = "The pdt service runs only on Windows, so portal commands cannot reach this computer."
 _said_once: set[str] = set()
 

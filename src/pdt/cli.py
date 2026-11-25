@@ -647,12 +647,12 @@ class HelpFormatter(rich_argparse.RawDescriptionRichHelpFormatter):
 
 
 COMMAND_GROUPS = {
-    "Get started": ["init", "examples", "new", "register", "upgrade", "completion"],
+    "Get started": ["init", "examples", "new", "upgrade", "completion"],
     "Run and validate": ["list", "validate", "run"],
     "Deploy": ["deploy", "destroy", "login", "pause", "unpause"],
     "Check a deployed app": ["health", "runs", "logs", "alerts", "gui"],
     "Manage app data": ["secrets", "storage"],
-    "Work with the AutoIDM portal": ["service"],
+    "Manage your apps from the pdt portal": ["register", "service"],
     "Cloud CLIs": ["aws", "az", "gcloud"],
 }
 
@@ -829,17 +829,16 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=HelpFormatter)
     p.set_defaults(func=cmd_alerts)
     p = add_parser("register",
-                   help="authenticate this computer for AutoIDM managed services")
+                   help="connect this computer to the pdt portal")
     p.add_argument("--code",
                    help="the one-time enrollment code from AutoIDM, such as KQ7M-2RTX; leave it "
                         "off to sign in through a browser")
     p.add_argument("--api-url",
                    help=f"the AutoIDM address (default: PDT_API_URL, else {config.AUTOIDM_API_URL})")
     p.add_argument("-y", "--yes", action="store_true",
-                   help="accept the access statement of the service install, and do not wait "
-                        "for the Connect pages")
+                   help="install the service without asking, and do not wait for the Connect pages")
     p.set_defaults(func=cmd_register)
-    p = add_parser("service", help="run commands from the AutoIDM portal on this computer")
+    p = add_parser("service", help="manage your apps from the pdt portal on this computer")
     actions = p.add_subparsers(dest="action", metavar="<action>", required=True, prog="pdt service")
 
     def add_action(group, name: str, **kwargs):
@@ -855,7 +854,7 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--proxy", metavar="URL",
                    help="the proxy for the service and its jobs (default: the proxy of this "
                         "computer's settings)")
-    q.add_argument("-y", "--yes", action="store_true", help="accept the access statement")
+    q.add_argument("-y", "--yes", action="store_true", help="skip the confirmation prompt")
     q = add_action(actions, "status", help="show the service, its last checks, and running commands")
     q.add_argument("--json", action="store_true", help="print JSON for a script or an agent")
     add_action(actions, "start", help="start the installed service through its service manager")
