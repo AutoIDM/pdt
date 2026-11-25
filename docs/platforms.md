@@ -1,6 +1,8 @@
-# Choosing where jobs run
+# Choosing where apps run
 
-Set `platform:` in the project's `pdt.yml` for every app, or in an app's own `pdt.yml` for one app. An app's own file wins. `timezone` may live under `platform:` as the default for every app, and an app's own `timezone` overrides it.
+Set `platform:` in the project's `pdt.yml` for every app, or in an app's own `pdt.yml` for one app. An app's own file wins. `timezone` may live under `platform:` as the default for every scheduled job, and a job's own `timezone` overrides it.
+
+Scheduled jobs (`app_profile: job`, the default) run on AWS, Azure, Google Cloud, or Windows Task Scheduler. Web apps (`app_profile: web`) run on Google Cloud Run behind Identity-Aware Proxy (see [Types of apps](types-of-apps.md)).
 
 A deploy to AWS, Azure, or Google Cloud builds each app's image in one of two places, and it says which place and why:
 
@@ -60,7 +62,7 @@ platform:
 
 ## Bringing your own Dockerfile
 
-Every cloud provider runs a job as a container (see [Primitives](../README.md#primitives)). The deploy builds an image for each app from a generated Dockerfile. It installs the script-header dependencies of `run.py` with `uv sync --script`, then copies the app folder and `pdt.yml` into `/workspace`, and runs `run.py` as the entrypoint. The install uses only the script header, so a deploy after a code or config change reuses the installed dependencies.
+Every cloud provider runs an app as a container (see [Types of apps](types-of-apps.md)). The deploy builds an image for each app from a generated Dockerfile. It installs the script-header dependencies of `run.py` with `uv sync --script`, then copies the app folder and `pdt.yml` into `/workspace`, and runs `run.py` as the entrypoint. The install uses only the script header, so a deploy after a code or config change reuses the installed dependencies.
 
 Put a `Dockerfile` in the app folder to build the image your own way, for example to add system packages or to install a heavy tool at build time instead of on every run. The build context is the same as the generated one: the app folder under its own name, next to `pdt.yml`. Start from the generated file:
 
