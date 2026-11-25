@@ -9,7 +9,7 @@ A Python app has a `run.py` with a `main()` function. It declares its dependenci
 ```python
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["pdt-cli[apps]==0.1.14"]
+# dependencies = ["pdt-cli[apps]==0.1.15"]
 # ///
 from pathlib import Path
 
