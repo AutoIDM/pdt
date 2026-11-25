@@ -8,7 +8,7 @@ import yaml
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from service_fixtures import CUSTOMER, INSTALLATION, FakePortal, copy_of
 
-from pdt import cli, config, register_cli, sync_cli
+from pdt import config, register_cli, sync_cli
 from pdt.utils import autoidm
 
 
@@ -39,9 +39,9 @@ def project(tmp_path, monkeypatch, portal):
     return root
 
 
-def run(monkeypatch, *argv):
-    monkeypatch.setattr("sys.argv", ["pdt", *argv])
-    return cli.run()
+def run(_monkeypatch, *argv):
+    args = list(argv[1:]) if argv and argv[0] == "sync" else list(argv)
+    return sync_cli.main(args)
 
 
 def accept_uploads(portal):

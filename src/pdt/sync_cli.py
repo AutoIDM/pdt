@@ -18,6 +18,7 @@ to read. After the copy, `pdt sync down` adds `managed_services:` to a pdt.yml t
 
 from __future__ import annotations
 
+import argparse
 import os
 import shutil
 import tempfile
@@ -232,3 +233,27 @@ def copy_down(root: Path, name: str, customer: str, registration: autoidm.Regist
         console.field("Saved the earlier files in", str(backup))
     console.done(f"{console.value(name)} now holds the copy at AutoIDM.")
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="pdt.sync_cli")
+    actions = parser.add_subparsers(dest="action", required=True)
+    for name in ("up", "down"):
+        sub = actions.add_parser(name)
+        sub.add_argument("app", nargs="?")
+        sub.add_argument("-y", "--yes", action="store_true")
+    args = parser.parse_args(argv)
+    try:
+        return up(args.app, args.yes) if args.action == "up" else down(args.app, args.yes)
+    except config.ConfigError as e:
+        console.error(console.escape(str(e)))
+        if isinstance(e, config.LockHeld) and os.environ.get(config.SERVICE_CHILD_ENV):
+            return config.LOCKED_EXIT
+        return 1
+    except (autoidm.AutoidmError, copies.CopyError) as e:
+        console.error(console.escape(str(e)))
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -183,16 +183,17 @@ def test_a_bad_arg_is_refused(operation, args, says):
     ("deploy", {"project": "p", "app": "hr"}, ["deploy", "hr", "--yes"]),
     ("destroy", {"project": "p", "app": "hr"}, ["destroy", "hr", "--yes"]),
     ("secrets_set", {"project": "p", "app": "hr", "name": "TOKEN"}, ["secrets", "hr", "set", "TOKEN"]),
-    ("sync_up", {"project": "p"}, ["sync", "up", "--yes"]),
-    ("sync_up", {"project": "p", "app": "hr"}, ["sync", "up", "hr", "--yes"]),
-    ("sync_down", {"project": "p"}, ["sync", "down", "--yes"]),
-    ("sync_down", {"project": "p", "app": "hr"}, ["sync", "down", "hr", "--yes"]),
+    ("sync_up", {"project": "p"}, ["up", "--yes"]),
+    ("sync_up", {"project": "p", "app": "hr"}, ["up", "hr", "--yes"]),
+    ("sync_down", {"project": "p"}, ["down", "--yes"]),
+    ("sync_down", {"project": "p", "app": "hr"}, ["down", "hr", "--yes"]),
     ("run_mr", {"project": "p", "app": "hr", "mr_iid": "12", "sha": "a" * 40,
                 "app_args": "--full"}, ["run", "hr"]),
 ])
 def test_each_operation_maps_to_one_command_line_of_pdt(operation, args, argv):
     assert service_commands.args_problem(operation, args) == ""
-    assert command_line(operation, args) == [sys.executable, "-I", "-m", "pdt.cli", *argv]
+    module = "pdt.sync_cli" if operation in ("sync_up", "sync_down") else "pdt.cli"
+    assert command_line(operation, args) == [sys.executable, "-I", "-m", module, *argv]
 
 
 def test_a_module_in_the_working_folder_does_not_replace_pdt(tmp_path):

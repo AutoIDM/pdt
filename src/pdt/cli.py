@@ -26,9 +26,8 @@ from pdt import completion, config, watch
 from pdt.config import ConfigError
 
 if not completion.COMPLETING:
-    from pdt import (alerts_cli, console, copies, deploy, gui_cli, lifecycle, powershell, pwsh,
-                     register_cli, run_windows_task, scaffold, service, sync_cli, upgrade)
-    from pdt.utils import autoidm
+    from pdt import (alerts_cli, console, deploy, gui_cli, lifecycle, powershell, pwsh,
+                     register_cli, run_windows_task, scaffold, service, upgrade)
     from pdt.utils.email_auth import can_prompt
     from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
 
@@ -576,18 +575,6 @@ def cmd_service(args) -> int:
     return actions[args.action]()
 
 
-def cmd_sync(args) -> int:
-    actions = {
-        "up": lambda: sync_cli.up(args.app, args.yes),
-        "down": lambda: sync_cli.down(args.app, args.yes),
-    }
-    try:
-        return actions[args.action]()
-    except (autoidm.AutoidmError, copies.CopyError) as e:
-        console.error(console.escape(str(e)))
-        return 1
-
-
 def cmd_gui(args) -> int:
     return gui_cli.main(args.port, args.background, args.no_browser, args.stop)
 
@@ -665,7 +652,7 @@ COMMAND_GROUPS = {
     "Deploy": ["deploy", "destroy", "login", "pause", "unpause"],
     "Check a deployed app": ["health", "runs", "logs", "alerts", "gui"],
     "Manage app data": ["secrets", "storage"],
-    "Work with the AutoIDM portal": ["service", "sync"],
+    "Work with the AutoIDM portal": ["service"],
     "Cloud CLIs": ["aws", "az", "gcloud"],
 }
 
@@ -875,15 +862,6 @@ def build_parser() -> argparse.ArgumentParser:
     q = add_action(actions, "remove", help="stop the service and remove it from this computer")
     q.add_argument("-y", "--yes", action="store_true", help="skip the confirmation prompt")
     p.set_defaults(func=cmd_service)
-    p = add_parser("sync", help="copy this project to or from AutoIDM")
-    actions = p.add_subparsers(dest="action", metavar="<action>", required=True, prog="pdt sync")
-    for name, what in (("up", "send this project, or one app, to AutoIDM as its current copy"),
-                       ("down", "write AutoIDM's current copy of this project, or one app, here")):
-        q = add_action(actions, name, help=what)
-        app = q.add_argument("app", nargs="?", help="one app folder; leave it off for the project")
-        app.completer = completion.apps
-        q.add_argument("-y", "--yes", action="store_true", help="skip the confirmation prompt")
-    p.set_defaults(func=cmd_sync)
     p = add_parser("gui", help="open the project's dashboard in your web browser")
     p.add_argument("--port", type=int, default=config.GUI_PORT,
                    help=f"the local port to serve on (default: {config.GUI_PORT})")

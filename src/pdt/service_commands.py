@@ -76,6 +76,7 @@ class Operation:
     runner_limit_seconds: int | None
     exclusive: bool = False
     from_copy: bool = False
+    module: str = "pdt.cli"
 
 
 OPERATIONS = {
@@ -108,11 +109,11 @@ OPERATIONS = {
     "secrets_set": Operation(("project", "app", "name"), (),
                              lambda a: ["secrets", a["app"], "set", a["name"]], 15 * MINUTE,
                              5 * MINUTE, 5 * MINUTE),
-    "sync_up": Operation(("project",), ("app",), lambda a: ["sync", "up", *app_option(a), "--yes"],
-                         24 * HOUR, 15 * MINUTE, None, exclusive=True),
+    "sync_up": Operation(("project",), ("app",), lambda a: ["up", *app_option(a), "--yes"],
+                         24 * HOUR, 15 * MINUTE, None, exclusive=True, module="pdt.sync_cli"),
     "sync_down": Operation(("project",), ("app",),
-                           lambda a: ["sync", "down", *app_option(a), "--yes"],
-                           24 * HOUR, 15 * MINUTE, None, exclusive=True),
+                           lambda a: ["down", *app_option(a), "--yes"],
+                           24 * HOUR, 15 * MINUTE, None, exclusive=True, module="pdt.sync_cli"),
     "run_mr": Operation(("project", "app", "mr_iid", "sha"), ("app_args",),
                         lambda a: ["run", a["app"]], HOUR, 6 * HOUR, 55 * MINUTE, from_copy=True),
 }
@@ -147,7 +148,7 @@ def args_problem(name: str, args: object) -> str:
 
 def command_line(operation: str, args: dict) -> list[str]:
     found = OPERATIONS[operation]
-    return [sys.executable, "-I", "-m", "pdt.cli", *found.argv(args)]
+    return [sys.executable, "-I", "-m", found.module, *found.argv(args)]
 
 
 def decoded(token: object, keys: list[dict], audience: str | None = None,
