@@ -168,12 +168,121 @@ def say_backend_error(api_url: str, e: autoidm.AutoidmError) -> None:
 def revoke_new(answer: dict, key: Ed25519PrivateKey, api_url: str) -> bool:
     new = autoidm.Registration(answer["installation_id"], api_url, key, "new")
     try:
-        autoidm.post(new, "/v1/service/remove", {"version": 1})
+        autoidm.post(new, "/v1/unregister", {"version": 1})
     except autoidm.AutoidmError as e:
         console.warn(f"AutoIDM did not revoke the new installation "
                      f"{console.value(answer['installation_id'])}: {console.escape(str(e))}")
         return False
     return True
+
+
+def customer_to_unregister(customer: str | None, found: list[str]) -> str | None:
+    """`customer`, else the customer of the current project, else the only registration here.
+    None after an error, or when this computer has no registration."""
+    if customer is not None:
+        if customer in found:
+            return customer
+        if found:
+            console.error(f"This computer has no AutoIDM registration of "
+                          f"{console.value(customer)}. It is registered for "
+                          f"{', '.join(console.value(item) for item in found)}.")
+        else:
+            console.error(f"This computer has no AutoIDM registration of "
+                          f"{console.value(customer)}.")
+        return None
+    try:
+        project = (managed_services.settings() or {}).get("customer")
+    except config.ConfigError:
+        project = None
+    if project in found:
+        return project
+    if len(found) == 1:
+        return found[0]
+    if found:
+        console.error(f"This computer is registered to AutoIDM for "
+                      f"{', '.join(console.value(item) for item in found)}. Name the customer "
+                      "to remove.")
+        console.next_steps([("pdt unregister --customer CUS", "remove one registration"),
+                            ("pdt unregister", "or run it in the folder of that customer's "
+                                               "project")])
+    else:
+        console.say("This computer is not registered with AutoIDM.")
+    return None
+
+
+def unregister(customer: str | None, assume_yes: bool = False, force: bool = False) -> int:
+    """Remove the pdt service when it serves `customer`, revoke this computer's installation at
+    AutoIDM, and delete <customer>.json and <customer>.key. A deployed cloud app keeps its own
+    cloud registration, so it keeps running and sending to AutoIDM."""
+    from pdt import service, service_backends
+    from pdt.service_install import InstallError
+    found = service.registrations_here()
+    target = customer_to_unregister(customer, found)
+    if target is None:
+        return 0 if customer is None and not found else 1
+    if os.name == "nt" and not service_access.is_admin():
+        console.error(f"pdt unregister deletes the key of this computer in "
+                      f"{console.value(autoidm.folder())} and removes the Windows service "
+                      f"{console.value(service_backends.NAME)}, which only an administrator can do. "
+                      "Open a terminal with Run as administrator.")
+        return 1
+    try:
+        settings = service.read_settings()
+    except InstallError as e:
+        console.error(console.escape(str(e)))
+        return 1
+    served = settings is not None and settings.get("customer") == target
+    if not assume_yes:
+        console.heading("pdt will:")
+        if served:
+            console.bullet("stop the pdt service and each command it runs, and remove the "
+                           f"Windows service {console.value(service_backends.NAME)}")
+        console.bullet(f"revoke the installation of this computer at AutoIDM for "
+                       f"{console.value(target)}")
+        for path in autoidm.files(target):
+            console.bullet(f"delete {console.value(path)}")
+        console.say("Each app you deployed to a cloud keeps running and sending to AutoIDM.")
+        if not can_prompt(None):
+            console.warn("There is no one to answer. Run this in a terminal, or add --yes.")
+            return 1
+        try:
+            if not console.confirm("Unregister this computer?"):
+                console.say("Cancelled. Nothing changed.")
+                return 0
+        except EOFError:
+            return 0
+    if served:
+        removed = service.remove_service(settings)
+        if removed != 0:
+            return removed
+    try:
+        found_registration = autoidm.machine_registration(target)
+        if found_registration is None:
+            raise autoidm.AutoidmError(f"{autoidm.files(target)[0]} is gone")
+        autoidm.post(found_registration, "/v1/unregister", {"version": 1})
+    except (autoidm.AutoidmError, ValueError) as e:
+        if isinstance(e, autoidm.AutoidmError) and e.status == 401:
+            console.note("AutoIDM had already revoked this installation")
+        elif not force:
+            console.error(f"pdt could not revoke this installation at AutoIDM, so the key stays: "
+                          f"{console.escape(str(e))}")
+            console.next_steps([("pdt unregister", "try again"),
+                                ("pdt unregister --force", "delete the registration files of "
+                                                           "this computer anyway")])
+            return 1
+        else:
+            console.warn(f"pdt could not revoke this installation at AutoIDM: "
+                         f"{console.escape(str(e))}. pdt deletes the registration files anyway.")
+    else:
+        console.done(f"AutoIDM revoked the installation "
+                     f"{console.value(found_registration.installation_id)}.")
+    with config.locked(autoidm.folder()):
+        for path in autoidm.files(target):
+            path.unlink(missing_ok=True)
+    console.done(f"This computer is no longer registered to AutoIDM for "
+                 f"{console.value(target)}.")
+    console.next_steps([("pdt register", "register this computer again")])
+    return 0
 
 
 def register_with_code(code: str, api_url: str) -> tuple:

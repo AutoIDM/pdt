@@ -61,7 +61,8 @@ from pdt.deploy_aws import (
 )
 from pdt.deploy_common import (
     BUILD_TAG, CostEstimate, build_in_cloud, ensure_image, fail, gather_secrets, image_action,
-    keep_paused, keeps_secret, make_registration, registration_secrets, run_build, run_secrets, secret_contents,
+    keep_paused, keeps_secret, make_registration, reads_registration, registration_secrets,
+    revoke_registration, run_build, run_secrets, secret_contents,
     ignore_sigterm, ssh_build_args, stop_on_sigterm, store_kept_line,
     store_name, store_plan_lines, store_suffix, warn_if_locked,
 )
@@ -1080,7 +1081,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
                          lambda: deregister_job_definitions(batch, revisions)))
         if resource_exists(clients["secretsmanager"], "describe_secret", SecretId=names["secret"]):
             plan.append((console.Markup(f"delete secret {console.value(names['secret'])}"),
-                         lambda: delete_secret(clients["secretsmanager"], names["secret"])))
+                         lambda: delete_app_secret(clients["secretsmanager"], names["secret"])))
         plan += [
             (console.Markup(f"delete tagged log group {console.value(names['log_group'])}"),
              lambda: delete_log_group(clients["logs"], names["log_group"])),
@@ -1146,6 +1147,19 @@ def destroy(app: dict, assume_yes: bool) -> int:
         console.say(store_kept_line(f"bucket {console.value(bucket)}", store.usage()[0],
                                     app["name"]))
     return 0
+
+
+def delete_app_secret(secrets, name: str) -> None:
+    """Revoke the AutoIDM cloud registration the secret holds, then delete the secret. Only a
+    project with `managed_services:` reads the secret first."""
+    if reads_registration():
+        try:
+            revoke_registration(secrets.get_secret_value(SecretId=name).get("SecretString"))
+        except Exception as exc:
+            if not not_found(exc):
+                console.warn(f"pdt could not read secret {console.value(name)}, so AutoIDM "
+                             f"keeps its cloud registration: {console.escape(str(exc))}")
+    delete_secret(secrets, name)
 
 
 def ms_to_utc(milliseconds: int) -> datetime:

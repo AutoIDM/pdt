@@ -850,6 +850,27 @@ def make_registration(values: dict[str, str], platform: dict) -> dict[str, str]:
             autoidm.CUSTOMER_ENV: customer}
 
 
+def revoke_registration(current: str | None) -> None:
+    """Revoke the AutoIDM cloud registration that the app's secret `current` holds. A destroy
+    goes on when AutoIDM cannot be reached or already revoked it."""
+    from pdt.utils import autoidm
+    values, _rest = split_registration(current)
+    names = (autoidm.ID_ENV, autoidm.KEY_ENV, autoidm.URL_ENV)
+    if not all(isinstance(values.get(name), str) and values[name] for name in names):
+        return
+    installation = values[autoidm.ID_ENV]
+    try:
+        found = autoidm.Registration(installation, values[autoidm.URL_ENV].rstrip("/"),
+                                     autoidm.load_key(values[autoidm.KEY_ENV].encode()),
+                                     autoidm.ID_ENV)
+        autoidm.post(found, "/v1/unregister", {"version": 1}, retry=False)
+    except (autoidm.AutoidmError, ValueError, TypeError) as e:
+        console.warn(f"AutoIDM did not revoke the cloud registration "
+                     f"{console.value(installation)}: {console.escape(str(e))}")
+        return
+    console.step(f"revoked AutoIDM cloud registration {console.value(installation)}")
+
+
 MASK_BOTH_ENDS_FROM = 12
 
 

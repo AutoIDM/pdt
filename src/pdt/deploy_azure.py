@@ -94,7 +94,7 @@ if "pdt" not in sys.modules:
 from pdt import config, console, storage_cli
 from pdt.deploy_common import (
     STORE_TAGS, CostEstimate, FatalAPIError, RetriableAPIError, cached_price, fail, fetch_json,
-    keeps_secret, run_main, secret_contents, store_plan_lines, store_suffix)
+    keeps_secret, revoke_registration, run_main, secret_contents, store_plan_lines, store_suffix)
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.storage import Store
 
@@ -812,6 +812,22 @@ def secret_state(settings: dict[str, str], sid: str, app_name: str,
         fail(f"Key Vault secret {console.value(sid)} already exists but is not owned "
              f"by PDT app {console.value(app_name)}; choose another Key Vault")
     return vault is not None, current.get("value") if current else None
+
+
+def revoke_app_registration(settings: dict[str, str], sid: str) -> None:
+    """Revoke the AutoIDM cloud registration that the app's secret holds, before destroy deletes
+    the secret. A failed read warns and does not stop the destroy."""
+    url = (f"https://{settings['vault']}.vault.azure.net/secrets/{sid}"
+           f"?api-version={VAULT_API_VERSION}")
+    try:
+        current = arm_get(access_token(VAULT_RESOURCE), url,
+                          ("keyvault", "secret", "show", "--vault-name", settings["vault"]),
+                          missing=SECRET_MISSING_OR_NOT_GRANTED)
+    except ReadError as exc:
+        console.warn(f"pdt could not read Key Vault secret {console.value(sid)}, so AutoIDM "
+                     f"keeps its cloud registration: {console.escape(str(exc))}")
+        return
+    revoke_registration((current or {}).get("value"))
 
 
 def granted_secret_value(settings: dict[str, str], sid: str) -> str | None:

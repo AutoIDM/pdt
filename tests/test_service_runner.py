@@ -5,6 +5,7 @@ import subprocess
 import sys
 import threading
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -855,16 +856,141 @@ def test_a_pid_file_of_a_process_that_ended_means_not_running(machine):
     assert service.running_pid() == os.getpid()
 
 
-def test_remove_of_a_foreground_service_deletes_the_settings(machine, portal, capsys,
-                                                             monkeypatch):
+def test_remove_of_a_foreground_service_deletes_the_settings_and_keeps_the_registration(
+        machine, portal, capsys, monkeypatch):
     service.write_settings({**settings(), "backend": None})
-    portal.routes["/v1/service/remove"] = lambda _body: (200, {"children": 0})
     monkeypatch.setattr(service.service_access, "is_admin", lambda: True)
     assert service.remove(True) == 0
     assert settings() is None
-    assert not autoidm.files(CUSTOMER)[0].exists()
+    assert all(path.exists() for path in autoidm.files(CUSTOMER))
+    assert portal.seen == []
+    out = " ".join(capsys.readouterr().out.split())
+    assert f"registration of {CUSTOMER}" in out and "pdt unregister" in out
     assert service.remove(True) == 0
     assert "no pdt service" in capsys.readouterr().out
+
+
+def test_remove_asks_first_and_says_the_registration_stays(machine, portal, capsys, monkeypatch):
+    monkeypatch.setattr(service.service_access, "is_admin", lambda: True)
+    monkeypatch.setattr(service, "can_prompt", lambda interactive: True)
+    monkeypatch.setattr(service.console, "confirm", lambda question, default=False: False)
+    assert service.remove(False) == 0
+    out = " ".join(capsys.readouterr().out.split())
+    assert f"This computer stays registered to AutoIDM for {CUSTOMER}" in out
+    assert "Cancelled" in out and settings() is not None
+
+
+SECOND_CUSTOMER = "cus_0000000002"
+
+
+def second_registration(portal) -> None:
+    folder = autoidm.folder()
+    register_cli.write_key(folder / f"{SECOND_CUSTOMER}.key", Ed25519PrivateKey.generate())
+    (folder / f"{SECOND_CUSTOMER}.json").write_text(json.dumps({
+        "installation_id": "ins_0000000002", "customer_id": SECOND_CUSTOMER,
+        "api_url": portal.url}))
+
+
+def windows(monkeypatch) -> None:
+    """os.name is "nt" only in register_cli, because pathlib on this computer cannot make a
+    WindowsPath."""
+    monkeypatch.setattr(register_cli, "os", types.SimpleNamespace(**{**vars(os), "name": "nt"}))
+
+
+def test_unregister_with_no_service_revokes_and_deletes_the_files(machine, portal, capsys):
+    service.settings_path().unlink()
+    assert register_cli.unregister(None, assume_yes=True) == 0
+    assert [(path, body) for path, body, _auth in portal.seen] == [
+        ("/v1/unregister", {"version": 1})]
+    assert not any(path.exists() for path in autoidm.files(CUSTOMER))
+    out = " ".join(capsys.readouterr().out.split())
+    assert f"AutoIDM revoked the installation {INSTALLATION}" in out
+    assert f"no longer registered to AutoIDM for {CUSTOMER}" in out
+    assert register_cli.unregister(None, assume_yes=True) == 0
+    assert "This computer is not registered with AutoIDM." in capsys.readouterr().out
+
+
+def test_unregister_removes_the_service_of_that_customer_first(machine, portal, monkeypatch):
+    removed = []
+    monkeypatch.setitem(service.service_backends.BACKENDS, "windows", service.service_backends.Backend(
+        lambda _python, _folder: None, lambda _python: None, lambda: removed.append("windows"),
+        lambda: False))
+    windows(monkeypatch)
+    monkeypatch.setattr(register_cli.service_access, "is_admin", lambda: True)
+    assert register_cli.unregister(None, assume_yes=True) == 0
+    assert removed == ["windows"] and settings() is None
+    assert [path for path, _body, _auth in portal.seen] == ["/v1/unregister"]
+    assert not any(path.exists() for path in autoidm.files(CUSTOMER))
+
+
+def test_unregister_on_windows_needs_an_administrator(machine, portal, capsys, monkeypatch):
+    windows(monkeypatch)
+    assert register_cli.unregister(None, assume_yes=True) == 1
+    assert "Run as administrator" in " ".join(capsys.readouterr().out.split())
+    assert portal.seen == [] and all(path.exists() for path in autoidm.files(CUSTOMER))
+
+
+def test_unregister_keeps_the_service_of_another_customer(machine, portal):
+    second_registration(portal)
+    assert register_cli.unregister(SECOND_CUSTOMER, assume_yes=True) == 0
+    assert settings()["customer"] == CUSTOMER
+    assert all(path.exists() for path in autoidm.files(CUSTOMER))
+    assert not any(path.exists() for path in autoidm.files(SECOND_CUSTOMER))
+
+
+def test_unregister_of_two_registrations_needs_the_customer(machine, portal, capsys,
+                                                            monkeypatch, tmp_path):
+    service.settings_path().unlink()
+    second_registration(portal)
+    monkeypatch.chdir(tmp_path)
+    assert register_cli.unregister(None, assume_yes=True) == 1
+    out = " ".join(capsys.readouterr().out.split())
+    assert CUSTOMER in out and SECOND_CUSTOMER in out and "pdt unregister --customer CUS" in out
+    assert portal.seen == []
+    assert register_cli.unregister("cus_0000000009", assume_yes=True) == 1
+    assert "no AutoIDM registration of cus_0000000009" in capsys.readouterr().out
+    monkeypatch.chdir(machine)
+    assert register_cli.unregister(None, assume_yes=True) == 0
+    assert not any(path.exists() for path in autoidm.files(CUSTOMER))
+    assert all(path.exists() for path in autoidm.files(SECOND_CUSTOMER))
+
+
+def test_unregister_of_an_installation_autoidm_already_revoked_deletes_the_files(
+        machine, portal, capsys):
+    service.settings_path().unlink()
+    portal.routes["/v1/unregister"] = lambda _body: (401, {"error": "unauthorized"})
+    assert register_cli.unregister(None, assume_yes=True) == 0
+    assert "already revoked" in capsys.readouterr().out
+    assert not any(path.exists() for path in autoidm.files(CUSTOMER))
+
+
+def test_unregister_keeps_the_key_when_autoidm_cannot_be_reached_unless_forced(
+        machine, portal, capsys):
+    service.settings_path().unlink()
+    portal.routes["/v1/unregister"] = lambda _body: (500, {"error": "internal"})
+    assert register_cli.unregister(None, assume_yes=True) == 1
+    out = " ".join(capsys.readouterr().out.split())
+    assert "so the key stays" in out and "pdt unregister --force" in out
+    assert all(path.exists() for path in autoidm.files(CUSTOMER))
+    assert register_cli.unregister(None, assume_yes=True, force=True) == 0
+    assert not any(path.exists() for path in autoidm.files(CUSTOMER))
+
+
+def test_a_forced_unregister_deletes_a_registration_pdt_cannot_read(machine, portal):
+    service.settings_path().unlink()
+    autoidm.files(CUSTOMER)[1].write_text("not a key")
+    assert register_cli.unregister(None, assume_yes=True) == 1
+    assert register_cli.unregister(None, assume_yes=True, force=True) == 0
+    assert portal.seen == []
+    assert not any(path.exists() for path in autoidm.files(CUSTOMER))
+
+
+def test_unregister_with_no_one_to_answer_changes_nothing(machine, portal, capsys, monkeypatch):
+    monkeypatch.setattr(register_cli, "can_prompt", lambda interactive: False)
+    assert register_cli.unregister(None) == 1
+    out = " ".join(capsys.readouterr().out.split())
+    assert "stop the pdt service" in out and "keeps running and sending to AutoIDM" in out
+    assert "add --yes" in out and portal.seen == [] and settings() is not None
 
 
 def test_status_with_no_service_says_so(tmp_path, monkeypatch, capsys):

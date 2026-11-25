@@ -3,7 +3,7 @@
 Inside an app folder, leave <app> off any command that takes one and pdt uses that app.
 Anywhere else, leave it off or mistype it and pdt lists the apps it found.
 
-Every command except init, examples, upgrade, completion, register, service, aws, az, and gcloud needs a project.
+Every command except init, examples, upgrade, completion, register, unregister, service, aws, az, and gcloud needs a project.
 pdt finds it by walking up from the working directory to the nearest pdt.yml that is not in an app folder (an app folder holds its own pdt.yml).
 """
 
@@ -565,6 +565,10 @@ def cmd_register(args) -> int:
     return register_cli.register(args.code, args.api_url, args.yes)
 
 
+def cmd_unregister(args) -> int:
+    return register_cli.unregister(args.customer, args.yes, args.force)
+
+
 def cmd_service(args) -> int:
     actions = {
         "install": lambda: service.install(args.projects, args.proxy, args.yes),
@@ -652,7 +656,7 @@ COMMAND_GROUPS = {
     "Deploy": ["deploy", "destroy", "login", "pause", "unpause"],
     "Check a deployed app": ["health", "runs", "logs", "alerts", "gui"],
     "Manage app data": ["secrets", "storage"],
-    "Manage your apps from the pdt portal": ["register", "service"],
+    "Manage your apps from the pdt portal": ["register", "unregister", "service"],
     "Cloud CLIs": ["aws", "az", "gcloud"],
 }
 
@@ -838,6 +842,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-y", "--yes", action="store_true",
                    help="install the service without asking, and do not wait for the Connect pages")
     p.set_defaults(func=cmd_register)
+    p = add_parser("unregister",
+                   help="disconnect this computer from the pdt portal and delete its local key")
+    p.add_argument("--customer", metavar="CUS",
+                   help="which customer registration to remove (default: the current project's "
+                        "customer, or the only registration on this computer)")
+    p.add_argument("-y", "--yes", action="store_true", help="skip the confirmation prompt")
+    p.add_argument("--force", action="store_true",
+                   help="remove the local registration files even if AutoIDM cannot be reached")
+    p.set_defaults(func=cmd_unregister)
     p = add_parser("service", help="manage your apps from the pdt portal on this computer")
     actions = p.add_subparsers(dest="action", metavar="<action>", required=True, prog="pdt service")
 
@@ -858,7 +871,8 @@ def build_parser() -> argparse.ArgumentParser:
     q = add_action(actions, "status", help="show the service, its last checks, and running commands")
     q.add_argument("--json", action="store_true", help="print JSON for a script or an agent")
     add_action(actions, "start", help="start the installed service through its service manager")
-    q = add_action(actions, "remove", help="stop the service and remove it from this computer")
+    q = add_action(actions, "remove", help="stop the service and remove it from this computer; "
+                                           "the registration stays")
     q.add_argument("-y", "--yes", action="store_true", help="skip the confirmation prompt")
     p.set_defaults(func=cmd_service)
     p = add_parser("gui", help="open the project's dashboard in your web browser")

@@ -65,7 +65,7 @@ from pdt.deploy_azure import (
     held_token_store, kept_group_deletes, list_remaining,
     managed_by_pdt, managed_secret, note_if_unreadable, other_pdt_apps, owned_by, preflight,
     portal_url, purge_secret, purge_vault, report_shared_kept, require_managed, resource_id, retail_price,
-    retained, revoke_role, run_basis, run_quiet, secret_actions, secret_name,
+    retained, revoke_app_registration, revoke_role, run_basis, run_quiet, secret_actions, secret_name,
     secret_reads, secret_scope, secret_state, secret_versions, store_condition, store_description,
     store_exists, store_plan, store_reads, store_settings, store_url, store_usage, workspace_keys,
     workspace_resource,
@@ -1556,6 +1556,8 @@ def destroy(app: dict, assume_yes: bool) -> int:
         if not confirm(actions, assume_yes):
             console.warn("Aborted; nothing was changed.")
             return DECLINED
+        if secret_owned and reads_registration():
+            revoke_app_registration(settings, sid)
         for lock in held:
             lock.remove()
         if grant:
@@ -1592,6 +1594,8 @@ def destroy(app: dict, assume_yes: bool) -> int:
     if not confirm(actions, assume_yes):
         console.warn("Aborted; nothing was changed.")
         return DECLINED
+    if secret_owned and reads_registration():
+        revoke_app_registration(settings, sid)
     for lock in held:
         lock.remove()
     if grant:

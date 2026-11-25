@@ -95,7 +95,7 @@ from pdt.deploy import DECLINED, confirm, show_plan
 from pdt.deploy_common import (
     BUILD_TAG, STORE_TAGS, CostEstimate, build_in_cloud, cached_price, convert_from_usd,
     ensure_image, fail, fetch_json, gather_secrets, ignore_sigterm, image_action, keep_paused, keeps_secret, make_registration,
-    registration_secrets, run_build, run_main, run_secrets, secret_contents, ssh_build_args, stop_on_sigterm,
+    reads_registration, registration_secrets, revoke_registration, run_build, run_main, run_secrets, secret_contents, ssh_build_args, stop_on_sigterm,
     store_cost_label, store_kept_line, store_name, store_plan_lines, store_suffix, warn_if_locked)
 from pdt import runs_cli
 from pdt import storage_cli
@@ -828,6 +828,19 @@ def secret_value(project: str, sid: str) -> str | None:
     # The API answers in standard base64 and gcloud's JSON in URL-safe base64.
     data = answer["payload"]["data"].replace("-", "+").replace("_", "/")
     return base64.b64decode(data).decode()
+
+
+def revoke_app_registration(project: str, sid: str) -> None:
+    """Revoke the AutoIDM cloud registration that the app's secret holds, before destroy deletes
+    the secret. A failed read warns and does not stop the destroy."""
+    try:
+        answer = api_json(f"{SECRET_API}/projects/{project}/secrets/{sid}/versions/latest:access")
+    except ApiReadError:
+        console.warn(f"pdt could not read Secret Manager secret {console.value(sid)}, so AutoIDM "
+                     "keeps its cloud registration")
+        return
+    if answer is not None:
+        revoke_registration(base64.b64decode(answer["payload"]["data"]).decode())
 
 
 def build_image(stage: Path, image: str, region: str) -> None:
@@ -1598,6 +1611,8 @@ def destroy(app: dict, assume_yes: bool) -> int:
                   "--region", region, "--project", project, "--quiet",
                   slow=f"deleting: Cloud Run job {console.value(job)}")
     if delete_secret:
+        if reads_registration():
+            revoke_app_registration(project, sid)
         console.step(f"deleting secret {console.value(sid)}")
         run_quiet("secrets", "delete", sid, "--project", project, "--quiet")
     if delete_image:

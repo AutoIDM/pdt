@@ -1,7 +1,10 @@
+import base64
 import io
 import json
 
+import jwt
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
 from test_autoidm import backend, folder, registered  # noqa: F401
 
@@ -200,3 +203,128 @@ def test_a_refused_cloud_registration_is_a_warning_and_the_deploy_goes_on(projec
 ])
 def test_the_place_names_the_provider_the_account_and_the_region(platform, place):
     assert managed_services.place(platform) == place
+
+
+def cloud_secret(url: str) -> str:
+    key = Ed25519PrivateKey.generate()
+    return json.dumps({"A": "1", autoidm.ID_ENV: "ins_0000000007",
+                       autoidm.KEY_ENV: autoidm.private_pem(key).decode(),
+                       autoidm.URL_ENV: url, autoidm.CUSTOMER_ENV: CUSTOMER})
+
+
+def test_a_destroy_revokes_the_cloud_registration_the_secret_holds(backend, capsys):
+    url, seen, _answers = backend
+    deploy_common.revoke_registration(cloud_secret(url))
+    assert [(item["path"], item["body"]) for item in seen] == [("/v1/unregister", {"version": 1})]
+    claims = jwt.decode(seen[0]["authorization"].removeprefix("Bearer "),
+                        options={"verify_signature": False})
+    assert claims["iss"] == "ins_0000000007"
+    assert "revoked AutoIDM cloud registration ins_0000000007" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("answer", [(401, {"error": "unauthorized"}), (503, {})])
+def test_a_refused_or_failed_revoke_only_warns(backend, capsys, answer):
+    url, seen, answers = backend
+    answers.append(answer)
+    deploy_common.revoke_registration(cloud_secret(url))
+    assert len(seen) == 1
+    assert "AutoIDM did not revoke the cloud registration ins_0000000007" in " ".join(
+        capsys.readouterr().out.split())
+
+
+def test_an_unreachable_autoidm_or_a_broken_key_only_warns(capsys):
+    deploy_common.revoke_registration(cloud_secret("http://127.0.0.1:9"))
+    broken = json.loads(cloud_secret("http://127.0.0.1:9"))
+    deploy_common.revoke_registration(json.dumps({**broken, autoidm.KEY_ENV: "not a key"}))
+    assert capsys.readouterr().out.count("AutoIDM did not revoke the cloud registration") == 2
+
+
+@pytest.mark.parametrize("current", [None, "not json", json.dumps({"A": "1"}),
+                                     json.dumps({**REGISTRATION, autoidm.KEY_ENV: ""})])
+def test_a_secret_with_no_cloud_registration_sends_nothing(backend, current, capsys):
+    _url, seen, _answers = backend
+    deploy_common.revoke_registration(current)
+    assert seen == [] and capsys.readouterr().out == ""
+
+
+class FakeSecrets:
+    def __init__(self, value):
+        self.value, self.calls = value, []
+
+    def get_secret_value(self, SecretId):
+        self.calls.append(("get", SecretId))
+        return {"SecretString": self.value}
+
+
+def test_an_aws_destroy_reads_the_secret_only_with_managed_services(backend, monkeypatch):
+    from pdt import deploy_aws_batch
+    url, seen, _answers = backend
+    deleted = []
+    monkeypatch.setattr(deploy_aws_batch, "delete_secret",
+                        lambda secrets, name: deleted.append(name))
+    secrets = FakeSecrets(cloud_secret(url))
+    monkeypatch.setattr(deploy_aws_batch, "reads_registration", lambda: False)
+    deploy_aws_batch.delete_app_secret(secrets, "pdt-demo")
+    assert secrets.calls == [] and seen == [] and deleted == ["pdt-demo"]
+    monkeypatch.setattr(deploy_aws_batch, "reads_registration", lambda: True)
+    deploy_aws_batch.delete_app_secret(secrets, "pdt-demo")
+    assert secrets.calls == [("get", "pdt-demo")] and deleted == ["pdt-demo", "pdt-demo"]
+    assert [item["path"] for item in seen] == ["/v1/unregister"]
+
+
+def test_an_aws_destroy_deletes_the_secret_when_autoidm_cannot_be_reached(monkeypatch, capsys):
+    from pdt import deploy_aws_batch
+    deleted = []
+    monkeypatch.setattr(deploy_aws_batch, "delete_secret",
+                        lambda secrets, name: deleted.append(name))
+    monkeypatch.setattr(deploy_aws_batch, "reads_registration", lambda: True)
+    deploy_aws_batch.delete_app_secret(FakeSecrets(cloud_secret("http://127.0.0.1:9")),
+                                       "pdt-demo")
+    assert deleted == ["pdt-demo"]
+    assert "AutoIDM did not revoke" in capsys.readouterr().out
+
+
+def test_a_google_cloud_destroy_revokes_from_the_latest_secret_version(backend, monkeypatch):
+    from pdt import deploy_google_cloud
+    url, seen, _answers = backend
+    data = base64.b64encode(cloud_secret(url).encode()).decode()
+    asked = []
+
+    def api_json(address):
+        asked.append(address)
+        return {"payload": {"data": data}}
+
+    monkeypatch.setattr(deploy_google_cloud, "api_json", api_json)
+    deploy_google_cloud.revoke_app_registration("example-jobs", "pdt-demo")
+    assert asked == [f"{deploy_google_cloud.SECRET_API}/projects/example-jobs/secrets/pdt-demo/"
+                     "versions/latest:access"]
+    assert [item["path"] for item in seen] == ["/v1/unregister"]
+
+
+def test_a_google_cloud_secret_pdt_cannot_read_only_warns(monkeypatch, capsys):
+    from pdt import deploy_google_cloud
+
+    def api_json(address):
+        raise deploy_google_cloud.ApiReadError(address)
+
+    monkeypatch.setattr(deploy_google_cloud, "api_json", api_json)
+    deploy_google_cloud.revoke_app_registration("example-jobs", "pdt-demo")
+    assert "AutoIDM keeps its cloud registration" in capsys.readouterr().out
+
+
+def test_an_azure_destroy_revokes_from_the_key_vault_secret(backend, monkeypatch, capsys):
+    from pdt import deploy_azure
+    url, seen, _answers = backend
+    monkeypatch.setattr(deploy_azure, "access_token", lambda resource=None: "token")
+    monkeypatch.setattr(deploy_azure, "arm_get",
+                        lambda token, address, command, missing=(404,): {
+                            "value": cloud_secret(url)})
+    deploy_azure.revoke_app_registration({"vault": "pdt-vault"}, "pdt-demo")
+    assert [item["path"] for item in seen] == ["/v1/unregister"]
+
+    def refused(token, address, command, missing=(404,)):
+        raise deploy_azure.ReadError(command, "ERROR: Forbidden")
+
+    monkeypatch.setattr(deploy_azure, "arm_get", refused)
+    deploy_azure.revoke_app_registration({"vault": "pdt-vault"}, "pdt-demo")
+    assert "AutoIDM keeps its cloud registration" in " ".join(capsys.readouterr().out.split())

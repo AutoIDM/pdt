@@ -206,6 +206,11 @@ def test_the_service_command_is_the_approved_set_and_sync_is_hidden():
     parser = cli.build_parser()
     sub = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
     assert "grant" not in sub.choices and "sync" not in sub.choices and "register" in sub.choices
+    assert "unregister" in sub.choices
+    assert cli.COMMAND_GROUPS["Manage your apps from the pdt portal"] == [
+        "register", "unregister", "service"]
+    args = parser.parse_args(["unregister", "--customer", "cus_7a1c09e4b2", "-y", "--force"])
+    assert (args.customer, args.yes, args.force) == ("cus_7a1c09e4b2", True, True)
     assert "sync" not in parser.format_help()
 
     def actions(command):

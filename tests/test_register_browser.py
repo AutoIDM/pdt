@@ -113,7 +113,7 @@ def test_a_second_registration_for_the_same_customer_revokes_the_new_installatio
     assert f"already registered to AutoIDM for {CUSTOMER} as {INSTALLATION}" in out
     assert "pdt revoked the new installation ins_0000000009" in out
     assert str(info) in out and str(key) in out and "pdt register" in out
-    assert len(portal.bodies("/v1/service/remove")) == 1
+    assert len(portal.bodies("/v1/unregister")) == 1
     assert key.read_bytes() == before
     assert not list(autoidm.folder().glob("pending-*.key"))
 
@@ -294,7 +294,7 @@ def test_a_registration_of_another_customer_than_the_service_is_revoked(portal, 
                             "named_projects": [], "backend": None})
     poll_answers(portal, (200, APPROVED))
     assert register_cli.register(None, portal.url) == 1
-    assert len(portal.bodies("/v1/service/remove")) == 1
+    assert len(portal.bodies("/v1/unregister")) == 1
     assert not autoidm.files(CUSTOMER)[0].exists() and not autoidm.files(CUSTOMER)[1].exists()
     out = " ".join(capsys.readouterr().out.split())
     assert "One computer serves one customer" in out

@@ -9,7 +9,8 @@ logged, and the next pass runs. For each command in a check-in, the service veri
 against the pinned keys, writes the journal, claims it, and starts it (pdt.service_runner).
 
 The service reads the settings at each pass. A change starts a check-in at once. When `pdt service
-remove` deletes the settings, the service stops.
+remove` deletes the settings, the service stops. It keeps the registration; `pdt unregister` revokes
+it at AutoIDM and deletes its files.
 
 The service serves each project the settings name, and each folder directly in the projects folder
 that holds pdt.yml. The projects folder has a default, `<data folder>/service/projects`, and a new
@@ -900,13 +901,35 @@ def stop_children(registration: autoidm.Registration | None) -> None:
             continue
         created = entry.get("process_created")
         service_runner.stop_tree(pid, lambda: not service_runner.is_same_process(pid, created))
-        result = service_runner.result_of("cancelled", message="pdt service remove stopped it.")
+        result = service_runner.result_of("cancelled", message="pdt removed the service, which stopped it.")
         service_runner.journal_update(command_id, state="finished", result=result, reported=False,
                                       finished_at=service_runner.now_text())
         sent = registration is not None and service_runner.send_result(registration, command_id,
                                                                        result)
         console.say(f"Stopped {console.value(command_id)}. AutoIDM "
                     f"{'has' if sent else 'does not have'} the result.")
+
+
+def remove_service(settings: dict) -> int:
+    """Stop each running command, uninstall the Windows service, and delete its settings. The
+    registration of this computer stays."""
+    customer = settings.get("customer")
+    try:
+        registration = autoidm.machine_registration(customer) if customer else None
+    except (autoidm.AutoidmError, ValueError) as e:
+        console.warn(console.escape(str(e)))
+        registration = None
+    stop_children(registration)
+    name = settings.get("backend")
+    if name in service_backends.BACKENDS:
+        try:
+            service_backends.BACKENDS[name].remove()
+        except service_backends.BackendError as e:
+            console.error(console.escape(str(e)))
+            return 1
+    settings_path().unlink(missing_ok=True)
+    console.done(f"Removed the Windows service {console.value(service_backends.NAME)}.")
+    return 0
 
 
 def remove(assume_yes: bool) -> int:
@@ -922,8 +945,9 @@ def remove(assume_yes: bool) -> int:
         return 0
     customer = settings.get("customer")
     if not assume_yes:
-        console.say(f"pdt will stop the service, revoke this installation at AutoIDM, and delete "
-                    f"the key of {console.value(customer)}.")
+        console.say(f"pdt will stop the service and each command it runs, and remove the Windows "
+                    f"service {console.value(service_backends.NAME)}. This computer stays "
+                    f"registered to AutoIDM for {console.value(customer)}.")
         if not can_prompt(None):
             console.warn("There is no one to answer. Run this in a terminal, or add --yes.")
             return 1
@@ -933,38 +957,19 @@ def remove(assume_yes: bool) -> int:
                 return 0
         except EOFError:
             return 0
-    try:
-        registration = autoidm.machine_registration(customer) if customer else None
-    except (autoidm.AutoidmError, ValueError) as e:
-        console.warn(console.escape(str(e)))
-        registration = None
-    stop_children(registration)
-    name = settings.get("backend")
-    if name in service_backends.BACKENDS:
-        try:
-            service_backends.BACKENDS[name].remove()
-        except service_backends.BackendError as e:
-            console.error(console.escape(str(e)))
-            return 1
-    if registration is not None:
-        try:
-            answer = autoidm.post(registration, "/v1/service/remove", {"version": 1})
-        except autoidm.AutoidmError as e:
-            console.error(f"AutoIDM did not revoke this installation, so the key stays: "
-                          f"{console.escape(str(e))}. Run the command again.")
-            return 1
-        console.say(f"AutoIDM revoked this installation and "
-                    f"{console.value(answer.get('children', 0))} child installations.")
-        for path in autoidm.files(customer):
-            path.unlink(missing_ok=True)
-    settings_path().unlink(missing_ok=True)
-    console.done(f"Removed the pdt service. Backend: {console.value(name or 'none')}.")
+    removed = remove_service(settings)
+    if removed != 0:
+        return removed
     console.heading("These stay on this computer:")
     console.bullet(f"data folder {console.value(autoidm.data_folder())}")
+    console.bullet(f"registration of {console.value(customer)} in "
+                   f"{console.value(autoidm.folder())}")
     console.bullet(f"journal {console.value(service_runner.service_folder() / 'journal')}")
     console.bullet(f"version folders {console.value(service_install.versions_folder())}")
     for name, folder in projects_of(settings).items():
         console.bullet(f"project {console.value(name)} in {console.value(folder)}")
+    console.next_steps([("pdt unregister", "also disconnect this computer from AutoIDM"),
+                        (install_next_step(), "install the service again")])
     return 0
 
 
