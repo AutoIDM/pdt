@@ -833,9 +833,12 @@ def destroy(app: dict, assume_yes: bool) -> int:
         delete_repo = gc.managed_by_pdt(repository) and not other_images
         delete_image = any(gc.image_name(item) == name for item in images) and not delete_repo
         # The builder and the build bucket go with the last of the project's jobs and web apps.
-        last_app = (not [item for item in gc.list_json("run", "jobs", "list", "--project", project)
-                         if gc.managed_by_pdt(item)]
-                    and not [other for other in gc.pdt_services(project) if other != service])
+        jobs = (gc.list_json("run", "jobs", "list", "--region", region, "--project", project)
+                + gc.other_region_items(gc.list_json("run", "jobs", "list", "--project", project),
+                                        region))
+        last_app = (not [item for item in jobs if gc.managed_by_pdt(item)]
+                    and not [other for other in gc.pdt_services(project, region)
+                             if other != service])
         builder = gc.builder_email(project)
         builder_account = gc.service_account_or_none(project, builder)
         builds = gc.build_bucket(project)

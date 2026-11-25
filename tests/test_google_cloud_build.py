@@ -357,6 +357,28 @@ def test_destroy_keeps_the_builder_while_another_app_runs(project, monkeypatch, 
     assert BUILDER in out and BUILDS in out
 
 
+RUNNER = "pdt-runner@my-project.iam.gserviceaccount.com"
+
+
+@pytest.mark.parametrize("kind", ["jobs", "services"])
+def test_destroy_keeps_shared_resources_for_an_app_only_the_regional_list_shows(
+        project, monkeypatch, kind):
+    other = {"metadata": {"name": "pdt-other", "labels": {
+        "managed-by": "pdt", "cloud.googleapis.com/location": "us-central1"}}}
+    fake = destroy_fake()
+    fake.found = {("run", kind, "list", "--region"): [other],
+                  ("iam", "service-accounts", "list"): [
+                      {"email": BUILDER, "displayName": google.BUILDER_DISPLAY_NAME},
+                      {"email": RUNNER, "displayName": "pdt job runner"}],
+                  **fake.found}
+    google.destroy(destroy_app(project, monkeypatch, fake), True)
+    assert fake.ran("iam", "service-accounts", "delete", BUILDER) == []
+    assert fake.ran("storage", "rm") == []
+    if kind == "jobs":
+        assert fake.ran("iam", "service-accounts", "delete", RUNNER) == []
+        assert fake.ran("artifacts", "repositories", "delete") == []
+
+
 def test_destroy_without_a_cloud_build_ever_tolerates_their_absence(project, monkeypatch):
     fake = destroy_fake(builder=False, bucket=False)
     assert google.destroy(destroy_app(project, monkeypatch, fake), True) == 0

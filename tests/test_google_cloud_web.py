@@ -427,6 +427,19 @@ def test_destroy_with_nothing_deployed_removes_nothing(google, monkeypatch, caps
     assert "Nothing to remove for dashboard" in " ".join(capsys.readouterr().out.split())
 
 
+def test_destroy_keeps_the_builder_for_a_job_only_the_regional_list_shows(google, monkeypatch):
+    fake = fake_cloud(monkeypatch, FakeCloud(found={
+        ("storage", "buckets", "describe"): {"labels": {"managed-by": "pdt"}}}))
+    job = {"metadata": {"name": "pdt-report", "labels": {"managed-by": "pdt"}}}
+    monkeypatch.setattr(gc, "list_json", lambda *args: (
+        [job] if args[:4] == ("run", "jobs", "list", "--region") else []))
+    monkeypatch.setattr(gc, "service_account_or_none", lambda project, email:
+                        {"email": email, "displayName": gc.BUILDER_DISPLAY_NAME})
+    assert gweb.destroy(web_app(google), True) == 0
+    assert fake.ran("iam", "service-accounts", "delete") == []
+    assert fake.ran("storage", "rm") == []
+
+
 PRICES = {gweb.CPU_SKU: 0.000024, gweb.MEMORY_SKU: 0.0000025, gweb.MIN_CPU_SKU: 0.0000025,
           gweb.MIN_MEMORY_SKU: 0.0000025, gweb.REQUESTS_SKU: 0.0000004, gweb.REGISTRY_SKU: 0.10}
 SECOND = 1 * 0.000024 + 0.5 * 0.0000025
