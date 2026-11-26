@@ -68,6 +68,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import ssl
@@ -310,6 +311,22 @@ def ensure_image(app: dict, image: str, image_platform: str, cloud_builder: str,
 
 def fail(message: str) -> None:
     console.error(message)
+    raise SystemExit(1)
+
+
+def fail_command(command: list[str], proc: subprocess.CompletedProcess, hint: str = "") -> None:
+    """Stop on a failed command: its own output, the full command line, then `hint`.
+
+    `command` is the line the user can run again, such as `pdt az ...`. Output
+    the command streamed is on the terminal already, so only captured text prints.
+    """
+    for output in (proc.stdout, proc.stderr):
+        if output and output.strip():
+            console.say(console.escape(output.strip()))
+    console.error(f"{console.value(shlex.join(command))} failed with exit code "
+                  f"{console.value(proc.returncode)}; fix the problem above and re-run")
+    if hint:
+        console.say(console.escape(hint))
     raise SystemExit(1)
 
 
@@ -666,11 +683,7 @@ def run_build(command: list[str], data: str | None = None, quiet: bool = False) 
     proc = subprocess.run(
         command, input=data, capture_output=quiet, text=True, check=False)
     if proc.returncode:
-        if (proc.stdout or "").strip():
-            console.say(console.escape(proc.stdout.strip()))
-        if (proc.stderr or "").strip():
-            console.say(console.escape(proc.stderr.strip()))
-        fail(f"{console.value(' '.join(command[:3]))} failed")
+        fail_command(command, proc)
 
 
 def secret_contents(values: dict[str, str]) -> str:

@@ -843,7 +843,7 @@ def run() -> int:
             script = Path(__file__).with_name(CLOUD_CLIS[sys.argv[1]])
             deploy.announce_install(script)
             return deploy.run_provider(
-                ["uv", "run", "--project", str(Path.cwd()), "--script", str(script),
+                ["uv", "run", "--quiet", "--project", str(Path.cwd()), "--script", str(script),
                  *sys.argv[1:]]).returncode
         args = parser.parse_args()
         if args.welcome:

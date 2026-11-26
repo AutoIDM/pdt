@@ -69,8 +69,8 @@ from pdt.deploy_azure import (
     workspace_resource,
 )
 from pdt.deploy_common import (
-    BUILD_TAG, CostEstimate, build_in_cloud, convert_from_usd, ensure_image, fail, gather_secrets,
-    image_action, run_build, run_secrets, ssh_build_args, store_cost_label, store_kept_line,
+    BUILD_TAG, CostEstimate, build_in_cloud, convert_from_usd, ensure_image, fail, fail_command,
+    gather_secrets, image_action, run_build, run_secrets, ssh_build_args, store_cost_label, store_kept_line,
     warn_if_locked)
 
 PROVIDERS = ("Microsoft.App", "Microsoft.ContainerRegistry",
@@ -140,10 +140,11 @@ def cloud_build(settings: dict, stage: Path, image_name: str) -> None:
     reconfigure = getattr(sys.stdout, "reconfigure", None)
     if reconfigure:
         reconfigure(errors="replace")
+    args = ["acr", "build", "--registry", registry, "--resource-group", rg,
+            "--image", f"{image_name}:latest", "--platform", "linux/amd64", "--no-format",
+            str(stage)]
     try:
-        proc = az("acr", "build", "--registry", registry, "--resource-group", rg,
-                  "--image", f"{image_name}:latest", "--platform", "linux/amd64",
-                  "--no-format", str(stage))
+        proc = az(*args)
     finally:
         if reconfigure:
             reconfigure(errors=errors)
@@ -170,9 +171,7 @@ def cloud_build(settings: dict, stage: Path, image_name: str) -> None:
              f"{console.value(command)}. The command needs the Owner or Role Based Access "
              "Control Administrator role. Or start Docker on this computer and run the same "
              "command again to build the image there.")
-    if error:
-        console.say(console.escape(error))
-    fail(f"{console.value('pdt az acr build')} failed; the build log and the error above say why")
+    fail_command(["pdt", "az", *args], proc)
 
 
 def acr_arm_auth_enabled(registry: dict | None) -> bool:
