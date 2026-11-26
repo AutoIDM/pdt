@@ -64,6 +64,7 @@ details.error summary { cursor: pointer; }
 .badge { display: inline-block; margin-left: 6px; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 500; }
 .badge.paused { background: #fef3c7; color: #92400e; }
 .badge.muted { background: #f1f5f9; color: var(--muted); }
+.badge.updating { background: #e0f2fe; color: #075985; }
 
 .buttons { display: flex; flex-wrap: wrap; gap: 6px; }
 .actions { display: inline; margin: 0; }
